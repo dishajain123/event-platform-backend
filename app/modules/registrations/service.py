@@ -2,12 +2,12 @@
 Registration lifecycle and scope-aware access rules.
 """
 import uuid
+from app.core.concurrency import acquire_event_capacity_lock
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
-from app.core.concurrency import acquire_event_capacity_lock
 from app.core.permissions import user_has_global_role, user_has_scoped_role
 from app.modules.config_engine.service import ConfigEngineService
 from app.modules.events.exceptions import EventNotFoundError
@@ -47,12 +47,6 @@ class RegistrationService:
         return config
 
     async def _ensure_capacity(self, event_id: uuid.UUID) -> None:
-        """
-        Checked while holding this event's advisory capacity lock (see
-        create_registration) — the COUNT() here is only race-safe because
-        no other concurrent registration for this same event_id can be
-        running its own capacity check or insert at the same time.
-        """
         config = await self._get_config_or_raise(event_id)
         if config.capacity is None:
             return
@@ -103,13 +97,6 @@ class RegistrationService:
 
         if team_member_count is None:
             team_member_count = len(participants) or 1
-
-        # Serializes everything below, for THIS event only, against any
-        # other concurrent registration attempt for the same event —
-        # closes the race window between "check capacity/duplicates" and
-        # "actually insert the registration." Released automatically when
-        # this method's transaction commits (or rolls back) below.
-        await acquire_event_capacity_lock(self.db, event_id)
 
         await self._ensure_no_duplicate(
             event_id=event_id,
