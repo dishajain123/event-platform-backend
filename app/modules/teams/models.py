@@ -1,5 +1,13 @@
 """
 Teams, members, and invitations for team-based participation.
+
+Team runs its own lightweight lifecycle (roster-building: draft →
+inviting → submitted → approved/rejected), but the actual
+participation record that Payments, Tickets, and Check-in key off is
+a Registration (see registration_id below) — created once the team is
+submitted, exactly like every other participation type. Team is not a
+second, parallel source of truth for "is this team allowed to
+participate"; Registration remains that single source of truth.
 """
 import uuid
 from datetime import date, datetime
@@ -43,6 +51,13 @@ class Team(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         UUIDType, ForeignKey("users.id"), default=None
     )
     rejection_reason: Mapped[str | None] = mapped_column(Text, default=None)
+
+    # The Registration created on submit — this is what Payments/Tickets/
+    # Check-in actually reference. Nullable only because a DRAFT/INVITING
+    # team hasn't been submitted yet.
+    registration_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType, ForeignKey("registrations.id"), default=None
+    )
 
     members: Mapped[list["TeamMember"]] = relationship(
         back_populates="team", cascade="all, delete-orphan"

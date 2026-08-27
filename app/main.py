@@ -30,6 +30,8 @@ from app.modules.staff.router import accept_router as staff_accept_router, route
 from app.modules.referrals.router import router as referrals_router
 from app.modules.teams.router import router as teams_router
 from app.modules.tickets.router import checkins_router, router as tickets_router
+from app.modules.reports.router import router as reports_router
+from app.modules.audit_log.router import router as audit_log_router
 
 
 settings = get_settings()
@@ -146,6 +148,16 @@ app.include_router(
 
 app.include_router(
     assistance_router,
+    prefix=settings.api_v1_prefix,
+)
+
+app.include_router(
+    reports_router,
+    prefix=settings.api_v1_prefix,
+)
+
+app.include_router(
+    audit_log_router,
     prefix=settings.api_v1_prefix,
 )
 

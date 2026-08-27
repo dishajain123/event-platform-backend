@@ -33,6 +33,10 @@ class TeamRepository:
         result = await self.db.execute(select(TeamMember).where(TeamMember.team_id == team_id))
         return len(result.scalars().all())
 
+    async def list_members(self, team_id: uuid.UUID) -> list[TeamMember]:
+        result = await self.db.execute(select(TeamMember).where(TeamMember.team_id == team_id))
+        return list(result.scalars().all())
+
     async def list_member_user_ids(self, team_id: uuid.UUID) -> list[uuid.UUID | None]:
         result = await self.db.execute(
             select(TeamMember.user_id).where(TeamMember.team_id == team_id)

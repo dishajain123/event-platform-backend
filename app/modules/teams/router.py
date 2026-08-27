@@ -1,5 +1,12 @@
 """
 Team endpoints for mobile captains and console reviewers.
+
+Note on /approve: does NOT use the require_scoped_role router
+dependency (event_id isn't in this route's path — only team_id is,
+and the team's event_id isn't known until it's loaded from the
+database). Authorization is enforced inside TeamService.approve_team(),
+which already checks the caller's scope correctly against the team's
+actual event_id.
 """
 import uuid
 
@@ -8,9 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import user_has_global_role
 from app.database import get_db
-from app.dependencies import get_current_user, require_role, require_scoped_role
+from app.dependencies import get_current_user
 from app.modules.identity.models import User
-from app.modules.rbac.models import RoleName
 from app.modules.teams.schemas import (
     TeamCreateIn,
     TeamInvitationIn,
@@ -87,21 +93,12 @@ async def list_teams(
     return await service.list_teams(uuid.UUID(event_id))
 
 
-@router.post(
-    "/{team_id}/approve",
-    response_model=TeamOut,
-    dependencies=[
-        Depends(
-            require_scoped_role(
-                RoleName.EVENT_MANAGER,
-                allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
-            )
-        )
-    ],
-)
+@router.post("/{team_id}/approve", response_model=TeamOut)
 async def approve_team(
     team_id: str,
     current_user: User = Depends(get_current_user),
     service: TeamService = Depends(get_team_service),
 ):
+    """Called by: console / scoped mobile Staff Mode (Event Manager). See
+    module docstring above for why this isn't a require_scoped_role dependency."""
     return await service.approve_team(uuid.UUID(team_id), current_user)

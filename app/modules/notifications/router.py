@@ -1,4 +1,17 @@
-"""Notification inbox and send endpoints."""
+"""
+Notification inbox and send endpoints.
+
+Note on /send: it does NOT use the require_scoped_role router
+dependency, because that dependency reads event_id from the URL PATH,
+and this route has no path parameters at all — the target event_id
+lives inside the request BODY (payload.target.event_id), which isn't
+available yet when router-level dependencies run. Authorization is
+instead enforced inside NotificationService.send_notifications(),
+which already checks the caller's scope against the target event_id
+correctly. Applying require_scoped_role here would look correct but
+silently reject every caller, since request.path_params would never
+contain "event_id" on this route.
+"""
 import uuid
 
 from fastapi import APIRouter, Depends, status
@@ -6,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import user_has_global_role
 from app.database import get_db
-from app.dependencies import get_current_user, require_role, require_scoped_role
+from app.dependencies import get_current_user, require_role
 from app.modules.identity.models import User
 from app.modules.notifications.models import NotificationChannel
 from app.modules.notifications.schemas import NotificationOut, NotificationSendIn, NotificationTemplateOut
@@ -33,21 +46,17 @@ async def list_my_notifications(
     "/send",
     response_model=list[NotificationOut],
     status_code=status.HTTP_201_CREATED,
-    dependencies=[
-        Depends(
-            require_scoped_role(
-                RoleName.EVENT_COORDINATOR,
-                RoleName.EVENT_MANAGER,
-                allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
-            )
-        )
-    ],
 )
 async def send_notification(
     payload: NotificationSendIn,
     current_user: User = Depends(get_current_user),
     service: NotificationService = Depends(get_notification_service),
 ):
+    """
+    Called by: console, or a scoped Event Manager/Event Coordinator's
+    mobile Staff Mode "quick announcement" action. Authorization is
+    enforced inside the service — see the module docstring above.
+    """
     return await service.send_notifications(
         actor=current_user,
         title=payload.title,

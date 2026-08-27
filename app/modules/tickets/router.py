@@ -1,4 +1,14 @@
-"""Ticket endpoints and check-in dashboard endpoints."""
+"""
+Ticket endpoints and check-in dashboard endpoints.
+
+Note on /check-in: does NOT use the require_scoped_role router
+dependency — the route only has ticket_id in its path, and the
+ticket's event_id isn't known until the ticket is loaded from the
+database. Authorization is enforced inside TicketService.check_in()
+via can_access_ticket(), which already checks the caller's scope
+correctly (ticket owner, OR any Staff Mode role scoped to that
+ticket's event, OR global console admin).
+"""
 import uuid
 
 from fastapi import APIRouter, Depends, Query, status
@@ -6,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import user_has_global_role, user_has_scoped_role
 from app.database import get_db
-from app.dependencies import get_current_user, require_scoped_role
+from app.dependencies import get_current_user
 from app.modules.identity.models import User
 from app.modules.rbac.models import RoleName
 from app.modules.tickets.models import CheckInSource
@@ -47,17 +57,6 @@ async def get_ticket(
     "/{ticket_id}/check-in",
     response_model=CheckInOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[
-        Depends(
-            require_scoped_role(
-                RoleName.EVENT_MANAGER,
-                RoleName.EVENT_COORDINATOR,
-                RoleName.STAFF_LEAD,
-                RoleName.STAFF_MEMBER,
-                allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
-            )
-        )
-    ],
 )
 async def check_in_ticket(
     ticket_id: str,
@@ -65,6 +64,11 @@ async def check_in_ticket(
     current_user: User = Depends(get_current_user),
     service: TicketService = Depends(get_ticket_service),
 ):
+    """
+    Called by: mobile Staff Mode (Volunteer/Staff Member/Staff Lead/Event
+    Coordinator/Event Manager scanning a QR ticket at the gate). See the
+    module docstring above for why this isn't a require_scoped_role dependency.
+    """
     return await service.check_in(
         uuid.UUID(ticket_id),
         current_user,

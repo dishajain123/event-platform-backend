@@ -20,6 +20,7 @@ from app.modules.identity.models import User
 from app.modules.payments.models import DiscountType
 from app.modules.payments.repository import DiscountCodeRepository, PaymentRepository
 from app.modules.rbac.models import RoleName
+from app.modules.rbac.repository import RoleAssignmentRepository
 from app.modules.registrations.models import RegistrationStatus
 from app.modules.registrations.repository import RegistrationRepository
 from app.modules.staff.models import StaffAssignmentStatus
@@ -33,6 +34,7 @@ class AssistanceService:
         self.registrations = RegistrationRepository(db)
         self.payments = PaymentRepository(db)
         self.staff_assignments = StaffAssignmentRepository(db)
+        self.role_assignments = RoleAssignmentRepository(db)
         self.discount_codes = DiscountCodeRepository(db)
 
     async def _can_review_event(self, actor: User, event_id: uuid.UUID) -> bool:
@@ -45,17 +47,42 @@ class AssistanceService:
         )
 
     async def _get_reviewers_for_event(self, event_id: uuid.UUID) -> list[uuid.UUID]:
-        assignments = await self.staff_assignments.list_for_event(event_id)
-        preferred = []
-        fallback = []
-        for assignment in assignments:
+        """
+        Picks reviewers using role_name (the RBAC-bridged field — see the
+        staff module's fix) rather than the old role_label free text, so
+        a request is only ever handed to someone who can actually act on
+        it. Prefers Staff Lead first (first-level review per the
+        platform's assistance workflow), then Event Coordinator, then
+        falls back to Event Manager if neither is staffed for this event.
+
+        This checks TWO sources and merges them: StaffAssignment records
+        (the normal path — someone invited and accepted through the
+        Staff module) AND RoleAssignment records directly (covers an
+        Event Manager granted straight from the RBAC endpoint by a Super
+        Admin/Operations Admin, bypassing the Staff module entirely —
+        that person still needs to be a valid reviewer/escalation target
+        even though no StaffAssignment row exists for them).
+        """
+        preferred_order = (RoleName.STAFF_LEAD, RoleName.EVENT_COORDINATOR, RoleName.EVENT_MANAGER)
+        by_role: dict[RoleName, set[uuid.UUID]] = {role: set() for role in preferred_order}
+
+        staff_assignments = await self.staff_assignments.list_for_event(event_id)
+        for assignment in staff_assignments:
             if assignment.status != StaffAssignmentStatus.ACTIVE or assignment.user_id is None:
                 continue
-            if assignment.role_label.lower() in {"reviewer", "assistance_reviewer", "event_manager", "event_coordinator"}:
-                preferred.append(assignment.user_id)
-            else:
-                fallback.append(assignment.user_id)
-        return preferred or fallback
+            if assignment.role_name in by_role:
+                by_role[assignment.role_name].add(assignment.user_id)
+
+        rbac_direct = await self.role_assignments.list_active_user_ids_for_event_and_roles(
+            event_id, set(preferred_order)
+        )
+        for role_name, user_ids in rbac_direct.items():
+            by_role[role_name].update(user_ids)
+
+        for role_name in preferred_order:
+            if by_role[role_name]:
+                return list(by_role[role_name])
+        return []
 
     async def create_request(
         self,

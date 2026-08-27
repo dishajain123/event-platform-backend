@@ -48,6 +48,9 @@ class Settings(BaseSettings):
 
     # ---- SMS provider ----
     sms_provider_api_key: str = ""
+    sms_provider_api_url: str = ""
+    sms_provider_sender_id: str = "EVENTPLAT"
+    sms_provider_timeout_seconds: float = 10.0
 
 
 @lru_cache

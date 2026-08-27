@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
+from app.modules.config_engine.service import ConfigEngineService
 from app.modules.events.exceptions import EventNotFoundError
 from app.modules.events.repository import EventRepository
 from app.modules.identity.models import User
@@ -23,6 +24,12 @@ from app.modules.referrals.repository import ReferralRepository, ReferralRewardR
 from app.modules.registrations.models import RegistrationStatus
 from app.modules.registrations.repository import RegistrationRepository
 
+# Used only if an event's configuration genuinely has no "referral" key
+# at all yet — NOT a business default, just a safe fallback so a referral
+# profile can still be created (with a zero reward) rather than crashing,
+# until an Operations Admin/Event Manager configures the real value.
+_UNCONFIGURED_REWARD_VALUE = Decimal("0")
+
 
 class ReferralService:
     def __init__(self, db: AsyncSession):
@@ -32,6 +39,7 @@ class ReferralService:
         self.rewards = ReferralRewardRepository(db)
         self.registrations = RegistrationRepository(db)
         self.payments = PaymentRepository(db)
+        self.config = ConfigEngineService(db)
 
     def _generate_referral_code(self, event_id: uuid.UUID, user_id: uuid.UUID) -> str:
         raw = f"{event_id.hex}:{user_id.hex}".encode()
@@ -44,16 +52,34 @@ class ReferralService:
             raise EventNotFoundError("Event not found.")
         return event
 
+    async def _get_configured_reward_value(self, event_id: uuid.UUID) -> Decimal:
+        """
+        Reads the referral reward amount from this event's own
+        configuration (EventConfiguration.rules["referral"]["reward_value"])
+        instead of a fixed platform-wide number — this is what lets two
+        different events on the same platform offer two different
+        referral rewards, set by whoever configures each event.
+        """
+        configuration = await self.config.get_configuration(event_id)
+        if configuration is None:
+            return _UNCONFIGURED_REWARD_VALUE
+        referral_rules = (configuration.rules or {}).get("referral") or {}
+        raw_value = referral_rules.get("reward_value")
+        if raw_value is None:
+            return _UNCONFIGURED_REWARD_VALUE
+        return Decimal(str(raw_value))
+
     async def get_or_create_profile(self, event_id: uuid.UUID, actor: User) -> Referral:
         await self._get_event_or_raise(event_id)
         referral = await self.referrals.get_by_referrer(event_id, actor.id)
         if referral is not None:
             return referral
+        reward_value = await self._get_configured_reward_value(event_id)
         referral = await self.referrals.create(
             event_id=event_id,
             referrer_user_id=actor.id,
             referral_code=self._generate_referral_code(event_id, actor.id),
-            reward_value=Decimal("100.00"),
+            reward_value=reward_value,
         )
         await write_audit_log(
             self.db,
@@ -61,7 +87,7 @@ class ReferralService:
             entity_id=referral.id,
             action="created",
             actor_user_id=actor.id,
-            after_value={"referral_code": referral.referral_code},
+            after_value={"referral_code": referral.referral_code, "reward_value": str(reward_value)},
         )
         await self.db.commit()
         await self.db.refresh(referral)

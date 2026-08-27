@@ -1,4 +1,12 @@
-"""Business logic for staff invitation, activation, and reassignment."""
+"""
+Business logic for staff invitation, activation, reassignment, and
+revocation — including the RBAC bridge that was previously missing
+entirely: accepting a staff invitation now creates a real
+RoleAssignment (so the person actually gains the permissions their
+role implies), and revoking/reassigning an assignment now revokes
+that RoleAssignment too (so a removed staff member actually loses
+access, not just their StaffAssignment row's display status).
+"""
 import uuid
 from datetime import datetime, timezone
 
@@ -9,9 +17,11 @@ from app.core.permissions import user_has_scoped_role
 from app.exceptions import PermissionDeniedError
 from app.integrations.sms_provider import send_staff_invite_sms
 from app.modules.identity.models import User
-from app.modules.rbac.models import RoleName
+from app.modules.rbac.models import SCOPED_ROLES, AssignmentStatus, RoleName
+from app.modules.rbac.repository import RoleAssignmentRepository, RoleRepository
 from app.modules.staff.exceptions import (
     InvalidStaffAssignmentStateError,
+    InvalidStaffRoleNameError,
     StaffAssignmentConflictError,
     StaffAssignmentNotFoundError,
 )
@@ -24,6 +34,8 @@ class StaffService:
         self.db = db
         self.assignments = StaffAssignmentRepository(db)
         self.history = StaffAssignmentHistoryRepository(db)
+        self.roles = RoleRepository(db)
+        self.role_assignments = RoleAssignmentRepository(db)
 
     async def _can_manage_event(self, actor: User, event_id: uuid.UUID) -> bool:
         return await user_has_scoped_role(
@@ -41,12 +53,16 @@ class StaffService:
             "user_id": str(assignment.user_id) if assignment.user_id else None,
             "invitee_mobile": assignment.invitee_mobile,
             "full_name": assignment.full_name,
+            "role_name": assignment.role_name.value if assignment.role_name else None,
             "role_label": assignment.role_label,
             "status": assignment.status.value,
             "invited_by": str(assignment.invited_by),
             "accepted_by": str(assignment.accepted_by) if assignment.accepted_by else None,
             "revoked_by": str(assignment.revoked_by) if assignment.revoked_by else None,
             "superseded_by_id": str(assignment.superseded_by_id) if assignment.superseded_by_id else None,
+            "linked_role_assignment_id": str(assignment.linked_role_assignment_id)
+            if assignment.linked_role_assignment_id
+            else None,
         }
 
     async def _get_assignment_or_raise(self, assignment_id: uuid.UUID) -> StaffAssignment:
@@ -55,12 +71,38 @@ class StaffService:
             raise StaffAssignmentNotFoundError("Staff assignment not found.")
         return assignment
 
+    async def _revoke_linked_role_assignment(
+        self, assignment: StaffAssignment, actor_id: uuid.UUID
+    ) -> None:
+        """Revokes the RBAC RoleAssignment tied to this StaffAssignment, if
+        one was ever created (i.e. the invitation had been accepted)."""
+        if assignment.linked_role_assignment_id is None:
+            return
+        role_assignment = await self.role_assignments.get_by_id(assignment.linked_role_assignment_id)
+        if role_assignment is not None and role_assignment.status == AssignmentStatus.ACTIVE:
+            await self.role_assignments.revoke(role_assignment)
+            await write_audit_log(
+                self.db,
+                entity_type="role_assignment",
+                entity_id=role_assignment.id,
+                action="revoked_via_staff_assignment",
+                actor_user_id=actor_id,
+                before_value={"status": AssignmentStatus.ACTIVE.value},
+                after_value={"status": AssignmentStatus.REVOKED.value},
+            )
+
     async def create_assignment(
-        self, *, event_id: uuid.UUID, actor: User, invitee_mobile: str, role_label: str,
-        full_name: str | None = None, venue_id: uuid.UUID | None = None
+        self, *, event_id: uuid.UUID, actor: User, invitee_mobile: str, role_name: RoleName,
+        role_label: str, full_name: str | None = None, venue_id: uuid.UUID | None = None
     ) -> StaffAssignment:
         if not await self._can_manage_event(actor, event_id):
             raise PermissionDeniedError("You don't have permission to manage staff for this event.")
+
+        if role_name not in SCOPED_ROLES:
+            raise InvalidStaffRoleNameError(
+                f"'{role_name}' is not a valid staff role. Must be one of: "
+                f"{[r.value for r in SCOPED_ROLES]}."
+            )
 
         conflict = await self.assignments.find_active_conflict(
             event_id=event_id, invitee_mobile=invitee_mobile, role_label=role_label, venue_id=venue_id
@@ -73,6 +115,7 @@ class StaffService:
             venue_id=venue_id,
             invitee_mobile=invitee_mobile,
             full_name=full_name,
+            role_name=role_name,
             role_label=role_label,
             status=StaffAssignmentStatus.INVITED,
             invited_by=actor.id,
@@ -107,14 +150,48 @@ class StaffService:
         assignment = await self._get_assignment_or_raise(assignment_id)
         if assignment.status == StaffAssignmentStatus.REVOKED:
             raise InvalidStaffAssignmentStateError("This assignment has been revoked.")
+        if assignment.status == StaffAssignmentStatus.ACTIVE:
+            raise InvalidStaffAssignmentStateError("This assignment has already been accepted.")
         if assignment.invitee_mobile != actor.mobile_number:
             raise InvalidStaffAssignmentStateError("This invitation was not issued to your mobile number.")
+        if assignment.role_name is None:
+            # Backward-safety for any pre-existing rows created before this
+            # fix — they cannot be bridged to a real permission and must be
+            # re-issued by the event's manager with a proper role_name.
+            raise InvalidStaffAssignmentStateError(
+                "This assignment has no role_name set and cannot be accepted. "
+                "Ask your Event Manager to reissue the invitation."
+            )
 
         before = self._snapshot(assignment)
+
+        role = await self.roles.get_by_name(assignment.role_name)
+        if role is None:
+            raise InvalidStaffRoleNameError(f"Role '{assignment.role_name}' is not seeded on this platform.")
+
+        # THE BRIDGE: accepting a staff invitation creates the actual
+        # RoleAssignment that every permission check in the app reads from.
+        role_assignment = await self.role_assignments.create(
+            user_id=actor.id, role_id=role.id, event_id=assignment.event_id, assigned_by=assignment.invited_by
+        )
+        await write_audit_log(
+            self.db,
+            entity_type="role_assignment",
+            entity_id=role_assignment.id,
+            action="assigned_via_staff_assignment",
+            actor_user_id=actor.id,
+            after_value={
+                "user_id": str(actor.id),
+                "role": assignment.role_name.value,
+                "event_id": str(assignment.event_id),
+            },
+        )
+
         assignment.user_id = actor.id
         assignment.status = StaffAssignmentStatus.ACTIVE
         assignment.accepted_by = actor.id
         assignment.accepted_at = datetime.now(timezone.utc)
+        assignment.linked_role_assignment_id = role_assignment.id
         if assignment.full_name is None and actor.name:
             assignment.full_name = actor.name
 
@@ -124,7 +201,7 @@ class StaffService:
             actor_user_id=actor.id,
             before_value=before,
             after_value=self._snapshot(assignment),
-            notes="Staff invitation accepted.",
+            notes="Staff invitation accepted; RoleAssignment created.",
         )
         await write_audit_log(
             self.db,
@@ -141,22 +218,34 @@ class StaffService:
 
     async def reassign_assignment(
         self, assignment_id: uuid.UUID, actor: User, *, invitee_mobile: str | None = None,
-        role_label: str | None = None, full_name: str | None = None, venue_id: uuid.UUID | None = None
+        role_name: RoleName | None = None, role_label: str | None = None,
+        full_name: str | None = None, venue_id: uuid.UUID | None = None
     ) -> StaffAssignment:
         old_assignment = await self._get_assignment_or_raise(assignment_id)
         if not await self._can_manage_event(actor, old_assignment.event_id):
             raise PermissionDeniedError("You don't have permission to manage staff for this event.")
+
+        effective_role_name = role_name or old_assignment.role_name
+        if effective_role_name not in SCOPED_ROLES:
+            raise InvalidStaffRoleNameError(
+                f"'{effective_role_name}' is not a valid staff role. Must be one of: "
+                f"{[r.value for r in SCOPED_ROLES]}."
+            )
 
         before = self._snapshot(old_assignment)
         old_assignment.status = StaffAssignmentStatus.REVOKED
         old_assignment.revoked_by = actor.id
         old_assignment.revoked_at = datetime.now(timezone.utc)
 
+        # Revoke the old assignment's real permissions before granting new ones.
+        await self._revoke_linked_role_assignment(old_assignment, actor.id)
+
         new_assignment = await self.assignments.create(
             event_id=old_assignment.event_id,
             venue_id=venue_id if venue_id is not None else old_assignment.venue_id,
             invitee_mobile=invitee_mobile or old_assignment.invitee_mobile,
             full_name=full_name if full_name is not None else old_assignment.full_name,
+            role_name=effective_role_name,
             role_label=role_label or old_assignment.role_label,
             status=StaffAssignmentStatus.INVITED,
             invited_by=actor.id,
@@ -192,7 +281,9 @@ class StaffService:
         await self.db.refresh(new_assignment)
         return new_assignment
 
-    async def revoke_assignment(self, assignment_id: uuid.UUID, actor: User, *, reason: str | None = None) -> StaffAssignment:
+    async def revoke_assignment(
+        self, assignment_id: uuid.UUID, actor: User, *, reason: str | None = None
+    ) -> StaffAssignment:
         assignment = await self._get_assignment_or_raise(assignment_id)
         if not await self._can_manage_event(actor, assignment.event_id):
             raise PermissionDeniedError("You don't have permission to manage staff for this event.")
@@ -203,6 +294,11 @@ class StaffService:
         assignment.status = StaffAssignmentStatus.REVOKED
         assignment.revoked_by = actor.id
         assignment.revoked_at = datetime.now(timezone.utc)
+
+        # The actual, functional revocation — without this, a "revoked"
+        # staff member retained full permissions from their prior acceptance.
+        await self._revoke_linked_role_assignment(assignment, actor.id)
+
         await self.history.create(
             assignment_id=assignment.id,
             action="revoked",

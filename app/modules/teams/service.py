@@ -1,5 +1,13 @@
 """
 Team lifecycle: create, invite, respond, submit, and approve.
+
+submit_team() creates the underlying Registration (via
+RegistrationService) that Payments/Tickets/Check-in actually key off —
+this is the fix for the gap where teams could be built and approved
+but never paid for or ticketed, because no Registration ever existed
+for them. approve_team() mirrors that decision onto the real
+Registration too, so the two "approve" actions stay in sync instead
+of being two disconnected parallel workflows.
 """
 import secrets
 import uuid
@@ -8,10 +16,15 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
+from app.core.permissions import user_has_scoped_role
 from app.modules.config_engine.service import ConfigEngineService
 from app.modules.events.exceptions import EventNotFoundError
 from app.modules.events.repository import EventRepository
 from app.modules.identity.models import User
+from app.modules.rbac.models import RoleName
+from app.modules.registrations.exceptions import DuplicateRegistrationError
+from app.modules.registrations.models import RegistrationStatus
+from app.modules.registrations.service import RegistrationService
 from app.modules.teams.exceptions import (
     DuplicateTeamInvitationError,
     InvalidTeamStateError,
@@ -21,8 +34,6 @@ from app.modules.teams.exceptions import (
 )
 from app.modules.teams.models import InvitationStatus, Team, TeamStatus
 from app.modules.teams.repository import TeamRepository
-from app.modules.rbac.models import RoleName
-from app.core.permissions import user_has_scoped_role
 
 
 class TeamService:
@@ -31,6 +42,7 @@ class TeamService:
         self.teams = TeamRepository(db)
         self.events = EventRepository(db)
         self.config = ConfigEngineService(db)
+        self.registrations = RegistrationService(db)
 
     async def _get_event_or_raise(self, event_id: uuid.UUID):
         event = await self.events.get_by_id(event_id)
@@ -123,6 +135,8 @@ class TeamService:
         team = await self.get_team_or_raise(team_id)
         if team.captain_user_id != actor.id:
             raise InvalidTeamStateError("Only the team captain can submit the team.")
+        if team.registration_id is not None:
+            raise InvalidTeamStateError("This team has already been submitted.")
 
         config = await self.config.get_configuration(team.event_id)
         if config is None:
@@ -130,20 +144,60 @@ class TeamService:
         if "team" not in config.participation_types:
             raise TeamEligibilityError("Team participation is not enabled for this event.")
 
-        team_size = await self.teams.count_members(team.id)
-        is_valid, errors = await self.config.validate_registration(
-            team.event_id,
-            "team",
-            team.captain_date_of_birth,
-            team_size,
-            [],
-            {},
-        )
-        if not is_valid:
-            raise TeamEligibilityError("; ".join(error.message for error in errors))
+        members = await self.teams.list_members(team.id)
+        team_size = len(members)
 
+        # This is the fix: submitting a team now creates the actual
+        # Registration record that Payments/Tickets/Check-in key off.
+        # RegistrationService.create_registration runs the exact same
+        # rule-engine validation (including team_size) that individual
+        # registrations go through — team size enforcement is not
+        # duplicated here, it's inherited from that single code path.
+        participants = [
+            {
+                "full_name": member.full_name,
+                "date_of_birth": member.date_of_birth,
+                "is_captain": member.is_captain,
+            }
+            for member in members
+        ]
+
+        try:
+            registration = await self.registrations.create_registration(
+                event_id=team.event_id,
+                actor=actor,
+                participation_type="team",
+                date_of_birth=team.captain_date_of_birth,
+                child_id=None,
+                team_id=team.id,
+                documents_provided=[],
+                answers={},
+                participants=participants,
+                team_member_count=team_size,
+            )
+        except DuplicateRegistrationError:
+            raise InvalidTeamStateError(
+                "This captain already has an active team registration for this event."
+            )
+        except TeamEligibilityError:
+            raise
+        except Exception as exc:
+            # Surfaces the rule engine's actual violation messages (e.g. team
+            # size out of bounds) as a TeamEligibilityError, matching what
+            # this module's callers already expect to catch.
+            raise TeamEligibilityError(str(exc)) from exc
+
+        team.registration_id = registration.id
         team.status = TeamStatus.SUBMITTED
         team.submitted_at = datetime.now(timezone.utc)
+        await write_audit_log(
+            self.db,
+            entity_type="team",
+            entity_id=team.id,
+            action="submitted",
+            actor_user_id=actor.id,
+            after_value={"registration_id": str(registration.id), "member_count": team_size},
+        )
         await self.db.commit()
         await self.db.refresh(team)
         return team
@@ -159,6 +213,27 @@ class TeamService:
         )
         if not has_access:
             raise InvalidTeamStateError("You cannot approve this team.")
+        if team.registration_id is None:
+            raise InvalidTeamStateError("This team has not been submitted yet.")
+
+        # Approving a team approves the underlying Registration too — this
+        # is what actually unlocks payment/ticket eligibility. Team.status
+        # is kept as a synchronized mirror for display, not a second
+        # source of truth. If the registration was already auto-approved
+        # at submission time (no approval required, no fee), it's already
+        # in a state decide_registration() would reject as "already
+        # decided" — that's fine, we only forward the decision when the
+        # registration is genuinely still pending it.
+        registration = await self.registrations.get_registration_or_raise(team.registration_id)
+        decidable_statuses = {
+            RegistrationStatus.PENDING_VERIFICATION,
+            RegistrationStatus.PENDING_PAYMENT,
+            RegistrationStatus.SUBMITTED,
+            RegistrationStatus.STARTED,
+        }
+        if registration.status in decidable_statuses:
+            await self.registrations.decide_registration(team.registration_id, actor, True)
+
         team.status = TeamStatus.APPROVED
         team.approved_by = actor.id
         team.rejected_by = None

@@ -66,6 +66,69 @@ async def test_team_invite_respond_submit_and_approve(db_session):
 
     team = await service.submit_team(team.id, captain)
     assert team.status == TeamStatus.SUBMITTED
+    assert team.registration_id is not None  # the fix: submission creates a real Registration
+
+    from app.modules.registrations.repository import RegistrationRepository
+    from app.modules.registrations.models import RegistrationStatus
+
+    registration = await RegistrationRepository(db_session).get_by_id(team.registration_id)
+    assert registration is not None
+    assert registration.team_id == team.id
+    assert registration.participation_type == "team"
+    # No fee configured and no approval required at submission time -> auto-approved immediately.
+    assert registration.status == RegistrationStatus.APPROVED
 
     team = await service.approve_team(team.id, approver)
     assert team.status == TeamStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_team_registration_respects_approval_required_before_payment(db_session):
+    """Proves the team->registration bridge correctly inherits the event's
+    configured approval_required flag, exactly like individual registrations do."""
+    creator = User(mobile_number="+919300000005")
+    db_session.add(creator)
+    await db_session.flush()
+
+    start = datetime.now(timezone.utc) + timedelta(days=45)
+    event = await EventService(db_session).create_event(
+        created_by=creator.id,
+        name="Phase 3 Team Event (approval required)",
+        description="fixture",
+        category="sample",
+        start_date=start,
+        end_date=start + timedelta(days=1),
+        organization_id=None,
+    )
+    await ConfigEngineService(db_session).upsert_configuration(
+        event.id,
+        participation_types=["team"],
+        fee_amount=None,
+        currency="INR",
+        capacity=10,
+        approval_required=True,
+        rules={"team_size": {"min": 1, "max": 3}},
+        discount_rules=None,
+    )
+
+    captain = User(mobile_number="+919300000006")
+    approver = User(mobile_number="+919300000007")
+    db_session.add_all([captain, approver])
+    await db_session.flush()
+    await _assign_global_role(db_session, approver, RoleName.OPERATIONS_ADMIN)
+
+    service = TeamService(db_session)
+    team = await service.create_team(event.id, captain, "Solo Entry Team", date(2010, 1, 1))
+    team = await service.submit_team(team.id, captain)
+
+    from app.modules.registrations.repository import RegistrationRepository
+    from app.modules.registrations.models import RegistrationStatus
+
+    registration = await RegistrationRepository(db_session).get_by_id(team.registration_id)
+    assert registration.status == RegistrationStatus.PENDING_VERIFICATION
+
+    # approve_team must forward the decision to the still-pending registration.
+    team = await service.approve_team(team.id, approver)
+    assert team.status == TeamStatus.APPROVED
+    registration = await RegistrationRepository(db_session).get_by_id(team.registration_id)
+    assert registration.status == RegistrationStatus.APPROVED

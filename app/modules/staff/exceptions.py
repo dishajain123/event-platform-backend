@@ -19,3 +19,7 @@ class StaffAssignmentConflictError(ConflictError):
 
 class StaffPermissionDeniedError(PermissionDeniedError):
     error_code = "staff_permission_denied"
+
+
+class InvalidStaffRoleNameError(ValidationError):
+    error_code = "invalid_staff_role_name"

@@ -46,6 +46,33 @@ class RoleAssignmentRepository:
         )
         return list(result.scalars().all())
 
+    async def list_active_user_ids_for_event_and_roles(
+        self, event_id: uuid.UUID, role_names: set[RoleName]
+    ) -> dict[RoleName, list[uuid.UUID]]:
+        """
+        Finds every user with an ACTIVE, event-scoped RoleAssignment to
+        any of role_names for this specific event — regardless of
+        whether that assignment was created directly via the RBAC
+        endpoint or bridged in from an accepted Staff invitation (see
+        staff/service.py's accept_assignment). Used as the RBAC-native
+        fallback source of reviewers/assignees for a given event, since
+        not every scoped role holder necessarily has a StaffAssignment
+        row (e.g. an Event Manager granted directly by Super Admin).
+        """
+        result = await self.db.execute(
+            select(Role.name, RoleAssignment.user_id)
+            .join(Role, RoleAssignment.role_id == Role.id)
+            .where(
+                RoleAssignment.event_id == event_id,
+                RoleAssignment.status == AssignmentStatus.ACTIVE,
+                Role.name.in_(role_names),
+            )
+        )
+        by_role: dict[RoleName, list[uuid.UUID]] = {name: [] for name in role_names}
+        for role_name, user_id in result.all():
+            by_role[role_name].append(user_id)
+        return by_role
+
     async def revoke(self, assignment: RoleAssignment) -> None:
         from datetime import datetime, timezone
 
