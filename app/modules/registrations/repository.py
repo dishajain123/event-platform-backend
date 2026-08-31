@@ -2,6 +2,7 @@ import uuid
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.modules.registrations.models import (
     ACTIVE_REGISTRATION_STATUSES,
@@ -22,15 +23,34 @@ class RegistrationRepository:
         return registration
 
     async def get_by_id(self, registration_id: uuid.UUID) -> Registration | None:
-        return await self.db.get(Registration, registration_id)
+        # BUG FIX: was `self.db.get(Registration, registration_id)`, which
+        # does not eager-load relationships. RegistrationOut serializes
+        # `participants`, and accessing a lazy-loaded relationship outside
+        # an active async context (e.g. during FastAPI's post-request
+        # response serialization) raises MissingGreenlet — this surfaced
+        # in practice the moment a registration with participants was
+        # successfully created and returned, rather than being masked by
+        # an earlier validation error.
+        result = await self.db.execute(
+            select(Registration)
+            .options(selectinload(Registration.participants))
+            .where(Registration.id == registration_id)
+        )
+        return result.scalar_one_or_none()
 
     async def list_for_user(self, user_id: uuid.UUID) -> list[Registration]:
-        result = await self.db.execute(select(Registration).where(Registration.user_id == user_id))
+        result = await self.db.execute(
+            select(Registration)
+            .options(selectinload(Registration.participants))
+            .where(Registration.user_id == user_id)
+        )
         return list(result.scalars().all())
 
     async def list_for_event(self, event_id: uuid.UUID) -> list[Registration]:
         result = await self.db.execute(
-            select(Registration).where(Registration.event_id == event_id)
+            select(Registration)
+            .options(selectinload(Registration.participants))
+            .where(Registration.event_id == event_id)
         )
         return list(result.scalars().all())
 

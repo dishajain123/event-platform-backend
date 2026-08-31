@@ -22,6 +22,7 @@ from app.security import TokenType, decode_token
 import jwt as _pyjwt
 
 bearer_scheme = HTTPBearer(auto_error=True)
+optional_bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
@@ -44,74 +45,37 @@ async def get_current_user(
     return user
 
 
+async def get_current_user_optional(
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """
+    For endpoints that serve BOTH an unauthenticated public audience and
+    an authenticated Console audience with elevated visibility (e.g.
+    the media gallery: the public/mobile app sees published items only,
+    while Console staff managing the event need to see drafts too).
+    Returns None on a missing or invalid token rather than raising —
+    the caller decides what "not authenticated" means for that endpoint.
+    """
+    if credentials is None:
+        return None
+    try:
+        claims = decode_token(credentials.credentials)
+    except _pyjwt.PyJWTError:
+        return None
+    if claims.get("type") != TokenType.ACCESS.value:
+        return None
+    try:
+        user_id = uuid.UUID(claims["sub"])
+    except (KeyError, ValueError):
+        return None
+    user = await UserRepository(db).get_by_id(user_id)
+    if user is None or not user.is_active:
+        return None
+    return user
+
+
 def require_role(*allowed_roles: RoleName):
     """
     Dependency factory for GLOBAL roles (Super Admin, Operations Admin,
     Finance Admin, Finance Operator, Finance Auditor). Use on any Console
-    endpoint that isn't scoped to a single event.
-
-    Usage: dependencies=[Depends(require_role(RoleName.SUPER_ADMIN))]
-    """
-
-    async def _check(
-        current_user: User = Depends(get_current_user),
-        db: AsyncSession = Depends(get_db),
-    ) -> User:
-        from app.exceptions import PermissionDeniedError
-
-        allowed = set(allowed_roles)
-        if not await user_has_global_role(db, current_user.id, allowed):
-            raise PermissionDeniedError(
-                "You don't have permission to perform this action."
-            )
-        return current_user
-
-    return _check
-
-
-def require_scoped_role(
-    *allowed_roles: RoleName,
-    event_id_param: str = "event_id",
-    allow_global_roles: set[RoleName] | None = None,
-):
-    """
-    Dependency factory for EVENT-SCOPED roles (Event Manager, Event
-    Coordinator, Staff Lead, Staff Member). Reads event_id from the
-    path parameters and checks the caller has an active assignment to
-    one of allowed_roles for THAT SPECIFIC event — an Event Manager for
-    event A is correctly rejected when calling an endpoint for event B.
-
-    allow_global_roles lets platform-wide roles (typically Super Admin /
-    Operations Admin) bypass the scope check, since they're meant to
-    reach every event.
-    """
-
-    async def _check(
-        request: Request,
-        current_user: User = Depends(get_current_user),
-        db: AsyncSession = Depends(get_db),
-    ) -> User:
-        from app.exceptions import PermissionDeniedError
-
-        raw_event_id = request.path_params.get(event_id_param)
-        if raw_event_id is None:
-            raise PermissionDeniedError(
-                f"Path parameter '{event_id_param}' is required for this scoped endpoint."
-            )
-        event_id = uuid.UUID(raw_event_id)
-
-        allowed = set(allowed_roles)
-        has_access = await user_has_scoped_role(
-            db, current_user.id, allowed, event_id, allow_global_roles=allow_global_roles
-        )
-        if not has_access:
-            raise PermissionDeniedError(
-                "You don't have permission to perform this action for this event."
-            )
-        return current_user
-
-    return _check
-
-
-def get_redis_dep() -> Redis:
-    return get_redis()

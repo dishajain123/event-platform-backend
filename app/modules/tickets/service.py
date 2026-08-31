@@ -36,25 +36,40 @@ class TicketService:
             self.settings.ticket_qr_secret.encode(), payload.encode(), hashlib.sha256
         ).hexdigest()
 
-    async def issue_ticket_for_payment(self, payment: Payment) -> Ticket:
-        existing = await self.tickets.get_by_registration_id(payment.registration_id)
+    async def _create_ticket(
+        self,
+        *,
+        event_id: uuid.UUID,
+        registration_id: uuid.UUID,
+        payment_id: uuid.UUID | None,
+        user_id: uuid.UUID,
+    ) -> Ticket:
+        """
+        Shared by both ticket-issuance paths — the payment webhook (see
+        issue_ticket_for_payment) and free/no-payment registrations (see
+        issue_ticket_for_registration). Whichever path calls it, the
+        registration ends up CONFIRMED and a real, scannable ticket
+        exists — a ticket's existence always means "confirmed," whether
+        or not money changed hands.
+        """
+        existing = await self.tickets.get_by_registration_id(registration_id)
         if existing is not None:
             return existing
         ticket_code = f"TKT-{secrets.token_hex(8)}"
-        payload = f"{ticket_code}:{payment.registration_id}:{payment.id}"
+        payload = f"{ticket_code}:{registration_id}:{payment_id or 'free'}"
         signature = self._sign_payload(payload)
         ticket = await self.tickets.create(
-            event_id=payment.event_id,
-            registration_id=payment.registration_id,
-            payment_id=payment.id,
-            user_id=payment.user_id,
+            event_id=event_id,
+            registration_id=registration_id,
+            payment_id=payment_id,
+            user_id=user_id,
             ticket_code=ticket_code,
             qr_payload=payload,
             qr_signature=signature,
             status=TicketStatus.ISSUED,
             issued_at=datetime.now(timezone.utc),
         )
-        registration = await self.registrations.get_by_id(payment.registration_id)
+        registration = await self.registrations.get_by_id(registration_id)
         if registration is not None:
             registration.status = RegistrationStatus.CONFIRMED
         await write_audit_log(
@@ -62,10 +77,33 @@ class TicketService:
             entity_type="ticket",
             entity_id=ticket.id,
             action="issued",
-            actor_user_id=payment.user_id,
-            after_value={"ticket_code": ticket.ticket_code},
+            actor_user_id=user_id,
+            after_value={"ticket_code": ticket.ticket_code, "payment_id": str(payment_id) if payment_id else None},
         )
         return ticket
+
+    async def issue_ticket_for_payment(self, payment: Payment) -> Ticket:
+        return await self._create_ticket(
+            event_id=payment.event_id,
+            registration_id=payment.registration_id,
+            payment_id=payment.id,
+            user_id=payment.user_id,
+        )
+
+    async def issue_ticket_for_registration(self, registration) -> Ticket:
+        """
+        The fix for free events: called directly from
+        RegistrationService whenever a registration reaches its final
+        "no payment needed" state (APPROVED with no fee configured),
+        since issue_ticket_for_payment only ever runs from inside the
+        payment webhook — a path free registrations never touch.
+        """
+        return await self._create_ticket(
+            event_id=registration.event_id,
+            registration_id=registration.id,
+            payment_id=None,
+            user_id=registration.user_id,
+        )
 
     async def list_my_tickets(self, user: User) -> list[Ticket]:
         return await self.tickets.list_for_user(user.id)

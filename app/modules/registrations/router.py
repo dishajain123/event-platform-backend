@@ -18,7 +18,9 @@ import uuid
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.exceptions import PermissionDeniedError
 from app.core.permissions import user_has_global_role
+from app.core.permissions import user_has_scoped_role
 from app.database import get_db
 from app.dependencies import get_current_user, require_role
 from app.modules.identity.models import User
@@ -68,7 +70,7 @@ async def list_my_registrations(
 
 @router.get("", response_model=list[RegistrationOut])
 async def list_registrations(
-    event_id: str | None = None,
+    event_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     service: RegistrationService = Depends(get_registration_service),
@@ -78,11 +80,20 @@ async def list_registrations(
     )
     if is_global_console:
         if event_id:
-            return await service.list_registrations_for_event(uuid.UUID(event_id))
+            return await service.list_registrations_for_event(event_id)
         return await service.list_all_registrations()
     if event_id is None:
         return await service.list_registrations_for_actor(current_user)
-    return await service.list_registrations_for_event(uuid.UUID(event_id))
+    is_event_manager = await user_has_scoped_role(
+        db,
+        current_user.id,
+        {RoleName.EVENT_MANAGER},
+        event_id,
+        allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
+    )
+    if not is_event_manager:
+        raise PermissionDeniedError("You don't have permission to view registrations for this event.")
+    return await service.list_registrations_for_event(event_id)
 
 
 @router.get("/{registration_id}", response_model=RegistrationOut)

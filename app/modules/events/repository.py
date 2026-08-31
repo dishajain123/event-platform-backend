@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.events.models import Event, EventStatus, ScheduleItem, Venue
+from app.modules.events.models import Event, EventStatus, ScheduleItem, Sponsor, Venue
 
 
 class EventRepository:
@@ -67,3 +67,26 @@ class ScheduleRepository:
             select(ScheduleItem).where(ScheduleItem.event_id == event_id)
         )
         return list(result.scalars().all())
+
+
+class SponsorRepository:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def create(self, event_id: uuid.UUID, **kwargs) -> Sponsor:
+        sponsor = Sponsor(event_id=event_id, **kwargs)
+        self.db.add(sponsor)
+        await self.db.flush()
+        return sponsor
+
+    async def list_for_event(self, event_id: uuid.UUID) -> list[Sponsor]:
+        result = await self.db.execute(
+            select(Sponsor).where(Sponsor.event_id == event_id).order_by(Sponsor.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def get_by_id(self, sponsor_id: uuid.UUID) -> Sponsor | None:
+        return await self.db.get(Sponsor, sponsor_id)
+
+    async def delete(self, sponsor: Sponsor) -> None:
+        await self.db.delete(sponsor)

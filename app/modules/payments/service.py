@@ -165,6 +165,17 @@ class PaymentService:
         await self.db.refresh(payment)
         return payment
 
+    async def list_refunds(self, event_id: uuid.UUID | None = None) -> list[Refund]:
+        """
+        Closes a real gap: there was previously no way to LIST refund
+        requests at all — only create a draft and approve one by ID you
+        already somehow knew. This is what the Finance Console's Refunds
+        queue actually reads from.
+        """
+        if event_id is None:
+            return await self.refunds.list_all()
+        return await self.refunds.list_for_event(event_id)
+
     async def request_refund(
         self, *, payment_id: uuid.UUID, actor: User, amount: Decimal | None, reason: str | None
     ) -> Refund:

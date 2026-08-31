@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     # ---- Identity document encryption ----
     identity_doc_encryption_key: str = ""
 
+    # ---- Object storage (MinIO) ----
+    minio_endpoint: str = ""
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    minio_bucket: str = "event-platform-media"
+    minio_secure: bool = False
+    minio_public_base_url: str = ""
+
     # ---- SMS provider ----
     sms_provider_api_key: str = ""
     sms_provider_api_url: str = ""

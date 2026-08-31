@@ -3,6 +3,7 @@ import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.modules.media.models import Highlight, Media
 
@@ -18,15 +19,28 @@ class MediaRepository:
         return media
 
     async def get_by_id(self, media_id: uuid.UUID) -> Media | None:
-        return await self.db.get(Media, media_id)
+        # BUG FIX: was `self.db.get(Media, media_id)`, which does not
+        # eager-load relationships. MediaOut serializes `highlight`, and
+        # accessing that lazy-loaded relationship outside an active
+        # async context (FastAPI's post-request response serialization)
+        # raises MissingGreenlet — same root cause as the identical fix
+        # in registrations/repository.py.
+        result = await self.db.execute(
+            select(Media).options(selectinload(Media.highlight)).where(Media.id == media_id)
+        )
+        return result.scalar_one_or_none()
 
     async def list_for_event(self, event_id: uuid.UUID) -> list[Media]:
-        result = await self.db.execute(select(Media).where(Media.event_id == event_id))
+        result = await self.db.execute(
+            select(Media).options(selectinload(Media.highlight)).where(Media.event_id == event_id)
+        )
         return list(result.scalars().all())
 
     async def list_published_for_event(self, event_id: uuid.UUID) -> list[Media]:
         result = await self.db.execute(
-            select(Media).where(Media.event_id == event_id, Media.is_published.is_(True))
+            select(Media)
+            .options(selectinload(Media.highlight))
+            .where(Media.event_id == event_id, Media.is_published.is_(True))
         )
         return list(result.scalars().all())
 

@@ -5,7 +5,7 @@ console) — see the include_all_statuses query param, gated by role.
 """
 import uuid
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import user_has_global_role
@@ -18,6 +18,8 @@ from app.modules.events.schemas import (
     EventUpdateIn,
     ScheduleItemIn,
     ScheduleItemOut,
+    SponsorIn,
+    SponsorOut,
     VenueIn,
     VenueOut,
 )
@@ -46,6 +48,16 @@ async def list_events(
         db, current_user.id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN}
     )
     return await service.list_events(include_all_statuses=is_console_admin)
+
+
+@router.get("/{event_id}", response_model=EventOut)
+async def get_event(
+    event_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    service: EventService = Depends(get_event_service),
+):
+    """Called by: console event detail pages."""
+    return await service.get_event_visible_to_actor(event_id, current_user)
 
 
 @router.post(
@@ -117,43 +129,99 @@ async def change_event_status(
     "/{event_id}/venues",
     response_model=VenueOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN))],
+    dependencies=[
+        Depends(
+            require_scoped_role(
+                RoleName.EVENT_MANAGER,
+                allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
+            )
+        )
+    ],
 )
 async def add_venue(
-    event_id: str, payload: VenueIn, service: EventService = Depends(get_event_service)
+    event_id: uuid.UUID, payload: VenueIn, service: EventService = Depends(get_event_service)
 ):
     """Called by: console."""
-    return await service.add_venue(uuid.UUID(event_id), **payload.model_dump())
+    return await service.add_venue(event_id, **payload.model_dump())
 
 
 @router.get("/{event_id}/venues", response_model=list[VenueOut])
 async def list_venues(
-    event_id: str,
+    event_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     service: EventService = Depends(get_event_service),
 ):
     """Called by: both."""
-    return await service.list_venues(uuid.UUID(event_id))
+    await service.get_event_visible_to_actor(event_id, current_user)
+    return await service.list_venues(event_id)
 
 
 @router.post(
     "/{event_id}/schedule",
     response_model=ScheduleItemOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN))],
+    dependencies=[
+        Depends(
+            require_scoped_role(
+                RoleName.EVENT_MANAGER,
+                allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
+            )
+        )
+    ],
 )
 async def add_schedule_item(
-    event_id: str, payload: ScheduleItemIn, service: EventService = Depends(get_event_service)
+    event_id: uuid.UUID, payload: ScheduleItemIn, service: EventService = Depends(get_event_service)
 ):
     """Called by: console."""
-    return await service.add_schedule_item(uuid.UUID(event_id), **payload.model_dump())
+    return await service.add_schedule_item(event_id, **payload.model_dump())
 
 
 @router.get("/{event_id}/schedule", response_model=list[ScheduleItemOut])
 async def get_schedule(
-    event_id: str,
+    event_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     service: EventService = Depends(get_event_service),
 ):
     """Called by: both."""
-    return await service.list_schedule(uuid.UUID(event_id))
+    await service.get_event_visible_to_actor(event_id, current_user)
+    return await service.list_schedule(event_id)
+
+
+@router.get("/{event_id}/sponsors", response_model=list[SponsorOut])
+async def list_sponsors(
+    event_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    service: EventService = Depends(get_event_service),
+):
+    """Called by: console sponsor management screens."""
+    await service.get_event_visible_to_actor(event_id, current_user)
+    return await service.list_sponsors(event_id)
+
+
+@router.post(
+    "/{event_id}/sponsors",
+    response_model=SponsorOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN))],
+)
+async def add_sponsor(
+    event_id: uuid.UUID,
+    payload: SponsorIn,
+    service: EventService = Depends(get_event_service),
+):
+    """Called by: console."""
+    return await service.add_sponsor(event_id, **payload.model_dump())
+
+
+@router.delete(
+    "/{event_id}/sponsors/{sponsor_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN))],
+)
+async def delete_sponsor(
+    event_id: uuid.UUID,
+    sponsor_id: uuid.UUID,
+    service: EventService = Depends(get_event_service),
+):
+    """Called by: console."""
+    await service.delete_sponsor(event_id, sponsor_id)

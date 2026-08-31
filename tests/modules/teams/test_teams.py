@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.modules.config_engine.service import ConfigEngineService
 from app.modules.events.service import EventService
 from app.modules.identity.models import User
+from app.modules.teams.router import list_teams
 from app.modules.rbac.models import RoleAssignment, RoleName, Role
 from app.modules.teams.models import TeamStatus
 from app.modules.teams.service import TeamService
@@ -132,3 +133,22 @@ async def test_team_registration_respects_approval_required_before_payment(db_se
     assert team.status == TeamStatus.APPROVED
     registration = await RegistrationRepository(db_session).get_by_id(team.registration_id)
     assert registration.status == RegistrationStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_team_list_route_requires_event_scope_for_non_global_users(db_session):
+    event = await _make_event(db_session)
+    manager = User(mobile_number="+919300000008")
+    outsider = User(mobile_number="+919300000009")
+    db_session.add_all([manager, outsider])
+    await db_session.flush()
+    await _assign_global_role(db_session, manager, RoleName.OPERATIONS_ADMIN)
+
+    service = TeamService(db_session)
+    allowed = await list_teams(event_id=event.id, current_user=manager, db=db_session, service=service)
+    assert allowed == []
+
+    from app.exceptions import PermissionDeniedError
+
+    with pytest.raises(PermissionDeniedError):
+        await list_teams(event_id=event.id, current_user=outsider, db=db_session, service=service)

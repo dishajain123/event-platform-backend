@@ -46,12 +46,30 @@ class MediaService:
             allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
         )
 
-    async def list_event_media(self, event_id: uuid.UUID) -> list[Media]:
+    async def list_event_media(self, event_id: uuid.UUID, actor: User | None = None) -> list[Media]:
+        """
+        BUG FIX: this endpoint is deliberately public/unauthenticated
+        (the mobile app and public event pages call it without a
+        token) — but it was hardwired to ONLY ever return published
+        items, with no way for Console staff to see drafts at all. That
+        made the upload -> publish workflow structurally impossible:
+        a newly uploaded item (always starts unpublished) could never
+        be seen again in order to publish it.
+
+        Now branches: an authenticated caller who can manage this
+        event's media sees everything (draft + published, so they can
+        actually find what to publish); everyone else — public/mobile,
+        or an authenticated user without that permission — sees only
+        published items, exactly as before.
+        """
         await self._get_event_or_raise(event_id)
-        items = await self.media.list_published_for_event(event_id)
-        highlights = {highlight.media_id: highlight for highlight in await self.highlights.list_for_event(event_id)}
-        for item in items:
-            item.highlight = highlights.get(item.id)
+        can_see_drafts = actor is not None and await self._can_manage_media(actor, event_id)
+        if can_see_drafts:
+            items = await self.media.list_for_event(event_id)
+        else:
+            items = await self.media.list_published_for_event(event_id)
+        # Both repository methods now eager-load `highlight` directly
+        # (see the repository fix), so no manual patch-in is needed here.
         return sorted(items, key=lambda item: (item.highlight is None, item.sort_order, item.created_at))
 
     async def upload_media(self, event_id: uuid.UUID, actor: User, payload: MediaUploadIn) -> Media:
@@ -96,8 +114,11 @@ class MediaService:
             after_value={"title": payload.title, "category": payload.category, "media_type": payload.media_type.value},
         )
         await self.db.commit()
-        await self.db.refresh(media)
-        return media
+        # Re-fetch via get_by_id (now eager-loads highlight) rather than
+        # db.refresh(media), which only reloads column attributes, not
+        # relationships — same fix as registrations/service.py's
+        # create_registration for the identical MissingGreenlet issue.
+        return await self.media.get_by_id(media.id)
 
     async def get_media_or_raise(self, media_id: uuid.UUID) -> Media:
         media = await self.media.get_by_id(media_id)
@@ -123,8 +144,8 @@ class MediaService:
             after_value={"is_published": is_published},
         )
         await self.db.commit()
-        await self.db.refresh(media)
-        return media
+        # Same fix as upload_media — re-fetch with highlight eager-loaded.
+        return await self.media.get_by_id(media.id)
 
     async def create_highlight(self, media_id: uuid.UUID, actor: User, payload: HighlightCreateIn) -> Highlight:
         media = await self.get_media_or_raise(media_id)

@@ -13,7 +13,7 @@ class TicketOut(BaseModel):
     id: uuid.UUID
     event_id: uuid.UUID
     registration_id: uuid.UUID
-    payment_id: uuid.UUID
+    payment_id: uuid.UUID | None
     user_id: uuid.UUID
     ticket_code: str
     qr_payload: str

@@ -42,6 +42,21 @@ async def list_my_notifications(
     return await service.list_my_notifications(current_user)
 
 
+@router.get("", response_model=list[NotificationOut])
+async def list_notifications_for_event(
+    event_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    service: NotificationService = Depends(get_notification_service),
+):
+    """
+    Called by: console (Communication page's "recent sends" panel).
+    event_id is a query param, not a path param, so this deliberately
+    does NOT use require_scoped_role — same reasoning as /send above.
+    Authorization is enforced inside the service.
+    """
+    return await service.list_notifications_for_event(current_user, event_id)
+
+
 @router.post(
     "/send",
     response_model=list[NotificationOut],

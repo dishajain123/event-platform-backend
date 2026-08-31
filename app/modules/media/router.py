@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_role, require_scoped_role
+from app.dependencies import get_current_user, get_current_user_optional, require_role, require_scoped_role
 from app.modules.identity.models import User
 from app.modules.media.schemas import MediaOut, MediaPublishIn, MediaUploadIn
 from app.modules.media.service import MediaService
@@ -22,9 +22,16 @@ def get_media_service(db: AsyncSession = Depends(get_db)) -> MediaService:
 @router.get("", response_model=list[MediaOut])
 async def list_event_media(
     event_id: str,
+    current_user: User | None = Depends(get_current_user_optional),
     service: MediaService = Depends(get_media_service),
 ):
-    return await service.list_event_media(uuid.UUID(event_id))
+    """
+    Called by: both — public/mobile app (no auth, published only) and
+    console (authenticated staff managing this event's media see
+    drafts too). See MediaService.list_event_media for why this can't
+    just be "authenticated = sees everything."
+    """
+    return await service.list_event_media(uuid.UUID(event_id), current_user)
 
 
 @router.post(

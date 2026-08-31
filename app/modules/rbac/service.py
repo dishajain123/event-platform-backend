@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.modules.rbac.exceptions import RoleNotFoundError, ScopeNotAllowedError, ScopeRequiredError
-from app.modules.rbac.models import GLOBAL_ROLES, SCOPED_ROLES, RoleAssignment, RoleName
+from app.modules.rbac.models import GLOBAL_ROLES, SCOPED_ROLES, AssignmentStatus, RoleAssignment, RoleName
 from app.modules.rbac.repository import RoleAssignmentRepository, RoleRepository
 
 
@@ -57,3 +57,29 @@ class RBACService:
 
     async def list_roles(self):
         return await self.roles.list_all()
+
+    async def list_my_active_role_assignments(self, user_id: uuid.UUID) -> list[dict]:
+        """
+        Resolves the current user's own active RoleAssignments to their
+        role NAME (joining against Role, so the caller doesn't have to
+        separately fetch GET /roles and cross-reference role_id itself).
+        This is what a client uses immediately after login to know what
+        it's allowed to do — there was previously no way to answer
+        "what roles do I hold" at all after authenticating.
+        """
+        assignments = await self.assignments.list_for_user(user_id)
+        results = []
+        for assignment in assignments:
+            if assignment.status != AssignmentStatus.ACTIVE:
+                continue
+            role = await self.roles.get_by_id(assignment.role_id)
+            if role is None:
+                continue
+            results.append(
+                {
+                    "role_name": role.name,
+                    "event_id": assignment.event_id,
+                    "status": assignment.status.value,
+                }
+            )
+        return results

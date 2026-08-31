@@ -28,3 +28,16 @@ class RoleAssignmentOut(BaseModel):
     role_id: uuid.UUID
     event_id: uuid.UUID | None
     status: str
+
+
+class MyRoleAssignmentOut(BaseModel):
+    """
+    What the console (or any authenticated client) needs to know about
+    its own session's authority: the resolved role NAME (not just a
+    role_id it would otherwise have to cross-reference against
+    GET /roles itself), and which event it's scoped to, if any.
+    """
+
+    role_name: RoleName
+    event_id: uuid.UUID | None
+    status: str

@@ -33,7 +33,12 @@ class Ticket(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     registration_id: Mapped[uuid.UUID] = mapped_column(
         UUIDType, ForeignKey("registrations.id"), nullable=False
     )
-    payment_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("payments.id"), nullable=False)
+    # Nullable because a free (no-fee) event's registration never
+    # creates a Payment row at all — see issue_ticket_for_registration()
+    # in service.py, the code path that issues a ticket with no payment.
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType, ForeignKey("payments.id"), default=None
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("users.id"), nullable=False)
     ticket_code: Mapped[str] = mapped_column(String(80), nullable=False)
     qr_payload: Mapped[str] = mapped_column(Text, nullable=False)

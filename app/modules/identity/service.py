@@ -114,6 +114,24 @@ class IdentityService:
             raise UserNotFoundError("User not found.")
         return user
 
+    async def find_or_create_for_admin_provisioning(
+        self, mobile_number: str, name: str | None = None
+    ) -> tuple[User, bool]:
+        """
+        Console-only path (see AdminUserLookupIn) for provisioning a
+        global admin role — Operations Admin, Finance Admin, Finance
+        Operator, Finance Auditor — for someone who may never have
+        opened the public app. Reuses the same get_or_create the OTP
+        flow already relies on, so there's exactly one place a User row
+        is ever created from a mobile number, whichever path triggers it.
+        """
+        user, created = await self.users.get_or_create(mobile_number)
+        if name and not user.name:
+            user.name = name
+        await self.db.commit()
+        await self.db.refresh(user)
+        return user, created
+
     # ---- Identity documents ----
 
     def _fernet(self) -> Fernet:

@@ -47,6 +47,16 @@ class RefundRepository:
         result = await self.db.execute(select(Refund))
         return list(result.scalars().all())
 
+    async def list_for_event(self, event_id: uuid.UUID) -> list[Refund]:
+        """
+        Joins through Payment since Refund has no event_id of its own —
+        used by the Console's Refunds queue to filter to one event.
+        """
+        result = await self.db.execute(
+            select(Refund).join(Payment, Refund.payment_id == Payment.id).where(Payment.event_id == event_id)
+        )
+        return list(result.scalars().all())
+
 
 class DiscountCodeRepository:
     def __init__(self, db: AsyncSession):

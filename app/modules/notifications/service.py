@@ -61,6 +61,12 @@ class NotificationService:
     async def list_my_notifications(self, user: User) -> list[Notification]:
         return await self.notifications.list_for_user(user.id)
 
+    async def list_notifications_for_event(self, actor: User, event_id: uuid.UUID) -> list[Notification]:
+        await self._get_event_or_raise(event_id)
+        if not await self._can_manage_event(actor, event_id):
+            raise PermissionDeniedError("You don't have permission to view notifications for this event.")
+        return await self.notifications.list_for_event(event_id)
+
     async def list_templates(self) -> list[NotificationTemplate]:
         return await self.templates.list_all()
 

@@ -11,3 +11,7 @@ class InvalidEventStatusTransitionError(ValidationError):
 
 class VenueNotFoundError(NotFoundError):
     error_code = "venue_not_found"
+
+
+class SponsorNotFoundError(NotFoundError):
+    error_code = "sponsor_not_found"

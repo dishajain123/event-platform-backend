@@ -8,9 +8,13 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
-from app.modules.events.exceptions import EventNotFoundError, InvalidEventStatusTransitionError
+from app.core.permissions import user_has_global_role, user_has_scoped_role
+from app.exceptions import PermissionDeniedError
+from app.modules.events.exceptions import EventNotFoundError, InvalidEventStatusTransitionError, SponsorNotFoundError
 from app.modules.events.models import ALLOWED_TRANSITIONS, Event, EventStatus
-from app.modules.events.repository import EventRepository, ScheduleRepository, VenueRepository
+from app.modules.events.repository import EventRepository, ScheduleRepository, SponsorRepository, VenueRepository
+from app.modules.identity.models import User
+from app.modules.rbac.models import RoleName
 
 
 class EventService:
@@ -19,6 +23,7 @@ class EventService:
         self.events = EventRepository(db)
         self.venues = VenueRepository(db)
         self.schedule = ScheduleRepository(db)
+        self.sponsors = SponsorRepository(db)
 
     async def create_event(self, *, created_by: uuid.UUID, **fields) -> Event:
         event = await self.events.create(created_by=created_by, **fields)
@@ -38,6 +43,32 @@ class EventService:
         if event is None:
             raise EventNotFoundError("Event not found.")
         return event
+
+    async def get_event_visible_to_actor(self, event_id: uuid.UUID, actor: User | None) -> Event:
+        event = await self.get_event_or_raise(event_id)
+
+        if actor is not None:
+            if await user_has_global_role(self.db, actor.id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN}):
+                return event
+            if await user_has_scoped_role(
+                self.db,
+                actor.id,
+                {RoleName.EVENT_MANAGER, RoleName.EVENT_COORDINATOR},
+                event_id,
+                allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
+            ):
+                return event
+
+        if event.status in {
+            EventStatus.PUBLISHED,
+            EventStatus.REGISTRATION_OPEN,
+            EventStatus.REGISTRATION_CLOSED,
+            EventStatus.LIVE,
+            EventStatus.COMPLETED,
+        }:
+            return event
+
+        raise PermissionDeniedError("You don't have permission to view this event.")
 
     async def update_event(self, event_id: uuid.UUID, actor_user_id: uuid.UUID, **fields) -> Event:
         event = await self.get_event_or_raise(event_id)
@@ -112,3 +143,24 @@ class EventService:
 
     async def list_schedule(self, event_id: uuid.UUID):
         return await self.schedule.list_for_event(event_id)
+
+    # ---- Sponsors ----
+
+    async def list_sponsors(self, event_id: uuid.UUID):
+        await self.get_event_or_raise(event_id)
+        return await self.sponsors.list_for_event(event_id)
+
+    async def add_sponsor(self, event_id: uuid.UUID, **fields):
+        await self.get_event_or_raise(event_id)
+        sponsor = await self.sponsors.create(event_id, **fields)
+        await self.db.commit()
+        await self.db.refresh(sponsor)
+        return sponsor
+
+    async def delete_sponsor(self, event_id: uuid.UUID, sponsor_id: uuid.UUID) -> None:
+        await self.get_event_or_raise(event_id)
+        sponsor = await self.sponsors.get_by_id(sponsor_id)
+        if sponsor is None or sponsor.event_id != event_id:
+            raise SponsorNotFoundError("Sponsor not found.")
+        await self.sponsors.delete(sponsor)
+        await self.db.commit()

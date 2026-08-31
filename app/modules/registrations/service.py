@@ -2,12 +2,12 @@
 Registration lifecycle and scope-aware access rules.
 """
 import uuid
-from app.core.concurrency import acquire_event_capacity_lock
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
+from app.core.concurrency import acquire_event_capacity_lock
 from app.core.permissions import user_has_global_role, user_has_scoped_role
 from app.modules.config_engine.service import ConfigEngineService
 from app.modules.events.exceptions import EventNotFoundError
@@ -47,6 +47,12 @@ class RegistrationService:
         return config
 
     async def _ensure_capacity(self, event_id: uuid.UUID) -> None:
+        """
+        Checked while holding this event's advisory capacity lock (see
+        create_registration) — the COUNT() here is only race-safe because
+        no other concurrent registration for this same event_id can be
+        running its own capacity check or insert at the same time.
+        """
         config = await self._get_config_or_raise(event_id)
         if config.capacity is None:
             return
@@ -95,8 +101,28 @@ class RegistrationService:
         if child_id is not None:
             await self.guardians.ensure_guardian_can_register_for_child(actor.id, child_id)
 
-        if team_member_count is None:
-            team_member_count = len(participants) or 1
+        # BUG FIX: team_member_count must only ever be meaningful for
+        # participation_type == "team" — it was previously defaulted to
+        # len(participants) or 1 for EVERY participation type, which meant
+        # any event configuring a team_size rule (needed to support team
+        # registrations at all) would incorrectly apply that same rule to
+        # every individual/viewer registration too, since 1 < min_size
+        # spuriously failed the check. Only team registrations pass a
+        # real team_member_count through to the rule engine; everything
+        # else passes None, which the rule engine already correctly
+        # treats as "no team_size check applies."
+        if participation_type == "team":
+            if team_member_count is None:
+                team_member_count = len(participants) or 1
+        else:
+            team_member_count = None
+
+        # Serializes everything below, for THIS event only, against any
+        # other concurrent registration attempt for the same event —
+        # closes the race window between "check capacity/duplicates" and
+        # "actually insert the registration." Released automatically when
+        # this method's transaction commits (or rolls back) below.
+        await acquire_event_capacity_lock(self.db, event_id)
 
         await self._ensure_no_duplicate(
             event_id=event_id,
@@ -151,9 +177,25 @@ class RegistrationService:
             actor_user_id=actor.id,
             after_value={"event_id": str(event_id), "status": registration.status.value},
         )
+
+        # BUG FIX: a free (no-fee), no-approval-required registration
+        # previously never received a ticket at all — ticket issuance
+        # was only ever wired to the payment webhook, a path a free
+        # event's registration never touches. Without this, check-in
+        # via QR scan was completely impossible for any free event.
+        if registration.status == RegistrationStatus.APPROVED and (
+            config.fee_amount is None or float(config.fee_amount) == 0
+        ):
+            from app.modules.tickets.service import TicketService
+
+            await TicketService(self.db).issue_ticket_for_registration(registration)
+
         await self.db.commit()
-        await self.db.refresh(registration)
-        return registration
+        # Re-fetch via get_by_id (eager-loads participants) rather than
+        # db.refresh(registration), which only reloads column attributes,
+        # not relationships — see the fix note in repository.py's
+        # get_by_id for why this matters for the API response.
+        return await self.registrations.get_by_id(registration.id)
 
     async def get_registration_or_raise(self, registration_id: uuid.UUID) -> Registration:
         registration = await self.registrations.get_by_id(registration_id)
@@ -224,6 +266,20 @@ class RegistrationService:
             actor_user_id=actor.id,
             after_value={"status": registration.status.value, "reason": reason},
         )
+
+        # Same fix as create_registration: an approved registration for a
+        # free (no-fee) event is now in its final "no payment needed"
+        # state — issue the ticket right here, since the payment webhook
+        # path this event will never touch is the only other place a
+        # ticket would otherwise get created.
+        if approve and registration.status == RegistrationStatus.APPROVED:
+            config = await self.config.get_configuration(registration.event_id)
+            if config is not None and (config.fee_amount is None or float(config.fee_amount) == 0):
+                from app.modules.tickets.service import TicketService
+
+                await TicketService(self.db).issue_ticket_for_registration(registration)
+
         await self.db.commit()
-        await self.db.refresh(registration)
-        return registration
+        # Same fix as create_registration — re-fetch with participants
+        # eager-loaded rather than a plain db.refresh().
+        return await self.registrations.get_by_id(registration.id)

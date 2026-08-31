@@ -59,3 +59,27 @@ class IdentityDocumentOut(BaseModel):
     id: uuid.UUID
     document_type: DocumentType
     verification_status: VerificationStatus
+
+
+class AdminUserLookupIn(BaseModel):
+    """
+    Used only by Super Admin / Finance Admin to provision the console's
+    global admin roles (Operations Admin, Finance Admin, Finance
+    Operator, Finance Auditor) for a person who may never have opened
+    the public app themselves. Finds the existing User for this mobile
+    number, or creates a bare account if none exists yet — the same
+    get_or_create the OTP-verify flow already uses internally, just
+    exposed for this one admin-provisioning purpose. Does not log
+    anyone in and issues no tokens.
+    """
+
+    mobile_number: str = Field(..., min_length=10, max_length=15)
+    name: str | None = None
+
+    @field_validator("mobile_number")
+    @classmethod
+    def digits_only(cls, v: str) -> str:
+        cleaned = v.strip()
+        if not cleaned.lstrip("+").isdigit():
+            raise ValueError("mobile_number must contain only digits (optionally with a leading +)")
+        return cleaned

@@ -13,7 +13,9 @@ import uuid
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.exceptions import PermissionDeniedError
 from app.core.permissions import user_has_global_role
+from app.core.permissions import user_has_scoped_role
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.modules.identity.models import User
@@ -83,14 +85,26 @@ async def submit_team(
 
 @router.get("", response_model=list[TeamOut])
 async def list_teams(
-    event_id: str | None = None,
+    event_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     service: TeamService = Depends(get_team_service),
 ):
     if event_id is None:
         return []
-    return await service.list_teams(uuid.UUID(event_id))
+    is_global_console = await user_has_global_role(
+        db, current_user.id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN}
+    )
+    is_event_manager = await user_has_scoped_role(
+        db,
+        current_user.id,
+        {RoleName.EVENT_MANAGER},
+        event_id,
+        allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
+    )
+    if not is_global_console and not is_event_manager:
+        raise PermissionDeniedError("You don't have permission to view teams for this event.")
+    return await service.list_teams(event_id)
 
 
 @router.post("/{team_id}/approve", response_model=TeamOut)

@@ -14,6 +14,9 @@ class RoleRepository:
         result = await self.db.execute(select(Role).where(Role.name == name))
         return result.scalar_one_or_none()
 
+    async def get_by_id(self, role_id: uuid.UUID) -> Role | None:
+        return await self.db.get(Role, role_id)
+
     async def list_all(self) -> list[Role]:
         result = await self.db.execute(select(Role))
         return list(result.scalars().all())

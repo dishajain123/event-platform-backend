@@ -68,6 +68,32 @@ async def list_payments(
     return await service.list_payments(uuid.UUID(event_id))
 
 
+@refunds_router.get(
+    "/refunds",
+    response_model=list[RefundOut],
+    dependencies=[
+        Depends(
+            require_role(
+                RoleName.FINANCE_ADMIN, RoleName.FINANCE_OPERATOR, RoleName.FINANCE_AUDITOR, RoleName.SUPER_ADMIN
+            )
+        )
+    ],
+)
+async def list_refunds(
+    event_id: str | None = None,
+    service: PaymentService = Depends(get_payment_service),
+):
+    """
+    Called by: console (all Finance roles, read-only for Auditor). This
+    is the Refunds queue's actual data source — previously there was no
+    way to list refund requests at all, only draft one and approve a
+    specific ID you'd have to already know from elsewhere.
+    """
+    if event_id is None:
+        return await service.list_refunds()
+    return await service.list_refunds(uuid.UUID(event_id))
+
+
 @refunds_router.post(
     "/refunds",
     response_model=RefundOut,

@@ -11,6 +11,7 @@ from app.modules.events.service import EventService
 from app.modules.guardians.exceptions import GuardianAuthorizationError
 from app.modules.guardians.service import GuardianService
 from app.modules.identity.models import User
+from app.modules.registrations.router import list_registrations
 from app.modules.rbac.models import RoleAssignment, RoleName
 from app.modules.registrations.exceptions import DuplicateRegistrationError
 from app.modules.registrations.service import RegistrationService
@@ -137,3 +138,32 @@ async def test_event_manager_can_approve_pending_registration(db_session):
 
     reg = await service.decide_registration(reg.id, approver, True)
     assert reg.status.value == "approved"
+
+
+@pytest.mark.asyncio
+async def test_registration_list_route_requires_event_scope_for_non_global_users(db_session):
+    event, _actor = await _make_event(db_session)
+    manager = User(mobile_number="+919100000005")
+    outsider = User(mobile_number="+919100000006")
+    db_session.add_all([manager, outsider])
+    await db_session.flush()
+    await _assign_role(db_session, manager, RoleName.EVENT_MANAGER, event.id)
+
+    service = RegistrationService(db_session)
+    allowed = await list_registrations(
+        event_id=event.id,
+        current_user=manager,
+        db=db_session,
+        service=service,
+    )
+    assert allowed == []
+
+    from app.exceptions import PermissionDeniedError
+
+    with pytest.raises(PermissionDeniedError):
+        await list_registrations(
+            event_id=event.id,
+            current_user=outsider,
+            db=db_session,
+            service=service,
+        )

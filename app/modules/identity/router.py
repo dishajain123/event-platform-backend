@@ -7,9 +7,10 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_role
 from app.modules.identity.models import User
 from app.modules.identity.schemas import (
+    AdminUserLookupIn,
     IdentityDocumentIn,
     IdentityDocumentOut,
     OTPRequestIn,
@@ -20,6 +21,7 @@ from app.modules.identity.schemas import (
     UserOut,
 )
 from app.modules.identity.service import IdentityService
+from app.modules.rbac.models import RoleName
 from app.redis_client import get_redis
 from app.security import TokenType, create_token, decode_token
 
@@ -76,6 +78,32 @@ async def logout() -> None:
     server-side revocation becomes a requirement.
     """
     return None
+
+
+@router.post(
+    "/users/find-or-create",
+    response_model=UserOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def find_or_create_user_for_admin_provisioning(
+    payload: AdminUserLookupIn,
+    current_user: User = Depends(require_role(RoleName.SUPER_ADMIN, RoleName.FINANCE_ADMIN)),
+    service: IdentityService = Depends(get_identity_service),
+) -> UserOut:
+    """
+    Called by: console only — Super Admin provisioning Operations Admin/
+    Finance Admin, or Finance Admin provisioning Finance Operator/Auditor.
+    Returns the existing user for this mobile number, or creates a bare
+    account if none exists yet, so the Console's Staff/Admin Accounts
+    screen can immediately follow up with POST /users/{user_id}/role-
+    assignments — closing the gap where that endpoint requires a
+    user_id the Console had no way to obtain for someone who'd never
+    opened the public app.
+    """
+    user, _created = await service.find_or_create_for_admin_provisioning(
+        payload.mobile_number, payload.name
+    )
+    return UserOut.model_validate(user)
 
 
 @router.get("/users/me", response_model=UserOut)

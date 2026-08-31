@@ -74,3 +74,19 @@ class ScheduleItemOut(BaseModel):
     title: str
     start_time: datetime
     end_time: datetime | None
+
+
+class SponsorIn(BaseModel):
+    name: str
+    tier: str | None = None
+    logo_url: str | None = None
+
+
+class SponsorOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    event_id: uuid.UUID
+    name: str
+    tier: str | None
+    logo_url: str | None

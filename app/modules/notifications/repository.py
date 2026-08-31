@@ -26,6 +26,21 @@ class NotificationRepository:
         )
         return list(result.scalars().all())
 
+    async def list_for_event(self, event_id: uuid.UUID) -> list[Notification]:
+        """
+        Closes a real gap: there was previously no way to see a history
+        of what's been sent for an event — only a recipient's own inbox
+        (list_for_user). Used by the Console's Communication page to show
+        recent sends. Returns one row per RECIPIENT (a targeted send fans
+        out to many rows) — the caller groups these back into logical
+        "sends" by (title, body, sent_at), since there's no separate
+        batch/send-id concept on this model.
+        """
+        result = await self.db.execute(
+            select(Notification).where(Notification.event_id == event_id).order_by(Notification.created_at.desc())
+        )
+        return list(result.scalars().all())
+
     async def list_by_ids(self, notification_ids: list[uuid.UUID]) -> list[Notification]:
         result = await self.db.execute(select(Notification).where(Notification.id.in_(notification_ids)))
         return list(result.scalars().all())
