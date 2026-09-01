@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.identity.models import IdentityDocument, User
+from app.modules.identity.phone import normalize_mobile_number
 
 
 class UserRepository:
@@ -18,12 +19,17 @@ class UserRepository:
         result = await self.db.execute(select(User).where(User.id == user_id))
         return result.scalar_one_or_none()
 
+    async def list_all(self) -> list[User]:
+        result = await self.db.execute(select(User).order_by(User.created_at.desc()))
+        return list(result.scalars().all())
+
     async def get_by_mobile_number(self, mobile_number: str) -> User | None:
-        result = await self.db.execute(select(User).where(User.mobile_number == mobile_number))
+        normalized = normalize_mobile_number(mobile_number)
+        result = await self.db.execute(select(User).where(User.mobile_number == normalized))
         return result.scalar_one_or_none()
 
     async def create(self, mobile_number: str) -> User:
-        user = User(mobile_number=mobile_number)
+        user = User(mobile_number=normalize_mobile_number(mobile_number))
         self.db.add(user)
         await self.db.flush()
         return user
@@ -31,10 +37,11 @@ class UserRepository:
     async def get_or_create(self, mobile_number: str) -> tuple[User, bool]:
         """Returns (user, created) — used by the OTP-verify flow to auto-create
         a visitor account on first successful login."""
-        existing = await self.get_by_mobile_number(mobile_number)
+        normalized = normalize_mobile_number(mobile_number)
+        existing = await self.get_by_mobile_number(normalized)
         if existing:
             return existing, False
-        return await self.create(mobile_number), True
+        return await self.create(normalized), True
 
 
 class IdentityDocumentRepository:

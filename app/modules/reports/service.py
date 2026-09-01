@@ -7,6 +7,7 @@ routing concern, not a data-shaping one.
 """
 import uuid
 from decimal import Decimal
+from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +20,12 @@ from app.modules.reports.schemas import (
     PlatformFinancialReportOut,
     PlatformOperationsReportOut,
     RegistrationStatusBreakdown,
+)
+from app.modules.events.models import EventStatus
+from app.modules.events.schemas import (
+    EventDashboardItemOut,
+    EventManagerOverviewOut,
+    EventOperationsOverviewOut,
 )
 
 
@@ -72,6 +79,126 @@ class ReportService:
             total_registrations_across_events=sum(r.total_registrations for r in event_reports),
             total_check_ins_across_events=sum(r.total_check_ins for r in event_reports),
             events=event_reports,
+        )
+
+    async def get_platform_operations_overview(self) -> EventOperationsOverviewOut:
+        events = await self.repo.list_events()
+        now = datetime.now(timezone.utc)
+
+        event_rows: list[EventDashboardItemOut] = []
+        manager_totals: dict[uuid.UUID | None, dict[str, object]] = {}
+
+        total_registrations = 0
+        active_registrations = 0
+        upcoming_events = 0
+        active_events = 0
+        completed_events = 0
+        draft_events = 0
+        unpublished_events = 0
+        registration_open_events = 0
+        registration_closed_events = 0
+        events_at_full_capacity = 0
+
+        for event in events:
+            counts_by_status = await self.repo.get_registration_counts_by_status(event.id)
+            event_total = sum(counts_by_status.values())
+            active_count = await self.repo.get_active_registration_count(event.id)
+            capacity = await self.repo.get_event_capacity(event.id)
+            is_full = capacity is not None and capacity > 0 and active_count >= capacity
+
+            total_registrations += event_total
+            active_registrations += active_count
+
+            if event.status in {EventStatus.DRAFT, EventStatus.CONFIGURED}:
+                draft_events += 1
+                unpublished_events += 1
+            elif event.status == EventStatus.ARCHIVED:
+                unpublished_events += 0
+
+            if event.status in {EventStatus.REGISTRATION_OPEN, EventStatus.LIVE}:
+                active_events += 1
+            if event.status == EventStatus.COMPLETED:
+                completed_events += 1
+            if event.status == EventStatus.REGISTRATION_OPEN:
+                registration_open_events += 1
+            if event.status == EventStatus.REGISTRATION_CLOSED:
+                registration_closed_events += 1
+            if event.start_date > now and event.status not in {EventStatus.ARCHIVED, EventStatus.COMPLETED}:
+                upcoming_events += 1
+            if is_full:
+                events_at_full_capacity += 1
+
+            registration_status = "full" if is_full else ("open" if event.status == EventStatus.REGISTRATION_OPEN else "closed")
+
+            event_rows.append(
+                EventDashboardItemOut(
+                    event_id=event.id,
+                    event_name=event.name,
+                    organizer_user_id=event.organizer_user_id,
+                    organizer_name=event.organizer.name if event.organizer else None,
+                    organizer_mobile_number=event.organizer.mobile_number if event.organizer else None,
+                    main_category=event.main_category.name if event.main_category else event.category,
+                    sub_category=event.sub_category.name if event.sub_category else None,
+                    status=event.status,
+                    start_date=event.start_date,
+                    end_date=event.end_date,
+                    total_registrations=event_total,
+                    active_registrations=active_count,
+                    capacity=capacity,
+                    registration_status=registration_status,
+                    is_full=is_full,
+                )
+            )
+
+            manager_key = event.organizer_user_id
+            manager_bucket = manager_totals.setdefault(
+                manager_key,
+                {
+                    "user_id": manager_key,
+                    "name": event.organizer.name if event.organizer else None,
+                    "mobile_number": event.organizer.mobile_number if event.organizer else None,
+                    "total_events": 0,
+                    "upcoming_events": 0,
+                    "active_events": 0,
+                    "completed_events": 0,
+                },
+            )
+            manager_bucket["total_events"] = int(manager_bucket["total_events"]) + 1
+            if event.start_date > now and event.status not in {EventStatus.ARCHIVED, EventStatus.COMPLETED}:
+                manager_bucket["upcoming_events"] = int(manager_bucket["upcoming_events"]) + 1
+            if event.status in {EventStatus.REGISTRATION_OPEN, EventStatus.LIVE}:
+                manager_bucket["active_events"] = int(manager_bucket["active_events"]) + 1
+            if event.status == EventStatus.COMPLETED:
+                manager_bucket["completed_events"] = int(manager_bucket["completed_events"]) + 1
+
+        manager_rows = [
+            EventManagerOverviewOut(
+                user_id=manager_data["user_id"],
+                name=manager_data["name"],
+                mobile_number=manager_data["mobile_number"],
+                total_events=int(manager_data["total_events"]),
+                upcoming_events=int(manager_data["upcoming_events"]),
+                active_events=int(manager_data["active_events"]),
+                completed_events=int(manager_data["completed_events"]),
+            )
+            for manager_data in manager_totals.values()
+        ]
+        manager_rows.sort(key=lambda row: (row.total_events, row.name or ""), reverse=True)
+
+        return EventOperationsOverviewOut(
+            total_events=len(events),
+            upcoming_events=upcoming_events,
+            active_events=active_events,
+            completed_events=completed_events,
+            draft_events=draft_events,
+            unpublished_events=unpublished_events,
+            registration_open_events=registration_open_events,
+            registration_closed_events=registration_closed_events,
+            events_at_full_capacity=events_at_full_capacity,
+            total_registrations=total_registrations,
+            active_registrations=active_registrations,
+            event_manager_overview=manager_rows,
+            events=event_rows,
         )
 
     async def _build_financial_report(self, event) -> EventFinancialReportOut:

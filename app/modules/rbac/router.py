@@ -1,9 +1,4 @@
-"""
-RBAC endpoints. Role assignment is Super Admin / Operations Admin only
-(Operations Admin creates every field-role account per the platform's
-account model; Super Admin can additionally create the other global
-admin roles).
-"""
+"""RBAC endpoints."""
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,6 +42,21 @@ async def list_roles(service: RBACService = Depends(get_rbac_service)):
     return await service.list_roles()
 
 
+@router.get(
+    "/roles/assignable",
+    response_model=list[RoleOut],
+    dependencies=[
+        Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN, RoleName.FINANCE_ADMIN))
+    ],
+)
+async def list_assignable_roles(
+    current_user: User = Depends(get_current_user),
+    service: RBACService = Depends(get_rbac_service),
+):
+    """Called by: console — role options are filtered by the backend."""
+    return await service.list_assignable_roles_for_user(current_user.id)
+
+
 @router.post(
     "/users/{user_id}/role-assignments",
     response_model=RoleAssignmentOut,
@@ -56,11 +66,11 @@ async def assign_role(
     user_id: str,
     payload: RoleAssignmentIn,
     current_user: User = Depends(
-        require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN)
+        require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN, RoleName.FINANCE_ADMIN)
     ),
     service: RBACService = Depends(get_rbac_service),
 ):
-    """Called by: console (Super Admin / Operations Admin)."""
+    """Called by: console."""
     import uuid as _uuid
 
     assignment = await service.assign_role(

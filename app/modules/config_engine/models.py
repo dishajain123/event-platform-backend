@@ -16,7 +16,7 @@ engine later without a schema change.
 import uuid
 
 from sqlalchemy import JSON, Boolean, ForeignKey, Numeric, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType
 
@@ -36,6 +36,7 @@ class EventConfiguration(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     currency: Mapped[str] = mapped_column(String(3), default="INR")
     capacity: Mapped[int | None] = mapped_column(default=None)
     approval_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
 
     # e.g. {"min_age": 16, "team_size": {"min": 5, "max": 11},
     #       "required_documents": ["aadhaar"]}
@@ -43,6 +44,8 @@ class EventConfiguration(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     # e.g. {"codes": {"EARLYBIRD": {"type": "percentage", "value": 10}}}
     discount_rules: Mapped[dict | None] = mapped_column(JSON, default=None)
+
+    event: Mapped["Event"] = relationship("Event", back_populates="configuration")
 
 
 class EventFieldSchema(Base, UUIDPrimaryKeyMixin, TimestampMixin):

@@ -4,6 +4,8 @@ promotional details. Deliberately holds ZERO rules about who can
 register or how; that's entirely config_engine's job. This module only
 answers "what event is this, when, where, and what state is it in."
 """
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
 from enum import StrEnum
@@ -47,14 +49,30 @@ class Event(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     organization_id: Mapped[uuid.UUID | None] = mapped_column(
         UUIDType, ForeignKey("organizations.id"), default=None
     )
+    organizer_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType, ForeignKey("users.id"), default=None, index=True
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, default=None)
     category: Mapped[str | None] = mapped_column(String(100), default=None)
+    main_category_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType, ForeignKey("main_categories.id"), default=None, index=True
+    )
+    sub_category_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType, ForeignKey("sub_categories.id"), default=None, index=True
+    )
     start_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     end_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[EventStatus] = mapped_column(Enum(EventStatus), default=EventStatus.DRAFT)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUIDType, ForeignKey("users.id"), default=None
+    )
+
+    main_category = relationship("MainCategory")
+    sub_category = relationship("SubCategory", back_populates="events")
+    organizer = relationship("User", foreign_keys=[organizer_user_id])
+    configuration = relationship(
+        "EventConfiguration", back_populates="event", uselist=False, cascade="all, delete-orphan"
     )
 
     venues: Mapped[list["Venue"]] = relationship(back_populates="event", cascade="all, delete-orphan")

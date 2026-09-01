@@ -11,6 +11,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import user_has_global_role, user_has_scoped_role
+from app.exceptions import PermissionDeniedError
 from app.database import get_db
 from app.modules.identity.exceptions import InvalidTokenError
 from app.modules.identity.models import User
@@ -77,5 +78,54 @@ async def get_current_user_optional(
 
 def require_role(*allowed_roles: RoleName):
     """
-    Dependency factory for GLOBAL roles (Super Admin, Operations Admin,
-    Finance Admin, Finance Operator, Finance Auditor). Use on any Console
+    Dependency factory for GLOBAL roles. Use this on endpoints that are
+    meant for platform-wide access, not event-scoped access.
+    """
+    allowed = set(allowed_roles)
+
+    async def _check(
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> User:
+        if not await user_has_global_role(db, current_user.id, allowed):
+            raise PermissionDeniedError("You don't have permission to access this resource.")
+        return current_user
+
+    return _check
+
+
+def require_scoped_role(
+    *allowed_roles: RoleName,
+    allow_global_roles: set[RoleName] | None = None,
+):
+    """
+    Dependency factory for event-scoped roles. The event_id is read from
+    the URL path, so this should only be used on routes whose path
+    contains `{event_id}`.
+    """
+    allowed = set(allowed_roles)
+
+    async def _check(
+        request: Request,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> User:
+        raw_event_id = request.path_params.get("event_id")
+        if raw_event_id is None:
+            raise PermissionDeniedError("This endpoint requires an event_id in the path.")
+        try:
+            event_id = uuid.UUID(str(raw_event_id))
+        except (TypeError, ValueError) as exc:
+            raise PermissionDeniedError("Invalid event scope.") from exc
+
+        if not await user_has_scoped_role(
+            db,
+            current_user.id,
+            allowed,
+            event_id,
+            allow_global_roles=allow_global_roles,
+        ):
+            raise PermissionDeniedError("You don't have permission to access this event.")
+        return current_user
+
+    return _check

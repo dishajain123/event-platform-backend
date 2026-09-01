@@ -36,6 +36,8 @@ def get_event_service(db: AsyncSession = Depends(get_db)) -> EventService:
 
 @router.get("", response_model=list[EventOut])
 async def list_events(
+    main_category_id: uuid.UUID | None = None,
+    sub_category_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     service: EventService = Depends(get_event_service),
@@ -47,7 +49,11 @@ async def list_events(
     is_console_admin = await user_has_global_role(
         db, current_user.id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN}
     )
-    return await service.list_events(include_all_statuses=is_console_admin)
+    return await service.list_events(
+        include_all_statuses=is_console_admin,
+        main_category_id=main_category_id,
+        sub_category_id=sub_category_id,
+    )
 
 
 @router.get("/{event_id}", response_model=EventOut)

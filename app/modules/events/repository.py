@@ -2,6 +2,7 @@ import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.modules.events.models import Event, EventStatus, ScheduleItem, Sponsor, Venue
 
@@ -17,9 +18,26 @@ class EventRepository:
         return event
 
     async def get_by_id(self, event_id: uuid.UUID) -> Event | None:
-        return await self.db.get(Event, event_id)
+        stmt = (
+            select(Event)
+            .options(
+                selectinload(Event.main_category),
+                selectinload(Event.sub_category),
+                selectinload(Event.organizer),
+                selectinload(Event.configuration),
+            )
+            .where(Event.id == event_id)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
 
-    async def list_public(self, min_status: EventStatus = EventStatus.PUBLISHED) -> list[Event]:
+    async def list_public(
+        self,
+        min_status: EventStatus = EventStatus.PUBLISHED,
+        *,
+        main_category_id: uuid.UUID | None = None,
+        sub_category_id: uuid.UUID | None = None,
+    ) -> list[Event]:
         """Used by the mobile app — only events at PUBLISHED or later are visible."""
         visible_statuses = [
             EventStatus.PUBLISHED,
@@ -28,12 +46,38 @@ class EventRepository:
             EventStatus.LIVE,
             EventStatus.COMPLETED,
         ]
-        result = await self.db.execute(select(Event).where(Event.status.in_(visible_statuses)))
+        stmt = select(Event).options(
+            selectinload(Event.main_category),
+            selectinload(Event.sub_category),
+            selectinload(Event.organizer),
+            selectinload(Event.configuration),
+        )
+        stmt = stmt.where(Event.status.in_(visible_statuses))
+        if main_category_id is not None:
+            stmt = stmt.where(Event.main_category_id == main_category_id)
+        if sub_category_id is not None:
+            stmt = stmt.where(Event.sub_category_id == sub_category_id)
+        result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
-    async def list_all(self) -> list[Event]:
+    async def list_all(
+        self,
+        *,
+        main_category_id: uuid.UUID | None = None,
+        sub_category_id: uuid.UUID | None = None,
+    ) -> list[Event]:
         """Used by the console — every status is visible."""
-        result = await self.db.execute(select(Event))
+        stmt = select(Event).options(
+            selectinload(Event.main_category),
+            selectinload(Event.sub_category),
+            selectinload(Event.organizer),
+            selectinload(Event.configuration),
+        )
+        if main_category_id is not None:
+            stmt = stmt.where(Event.main_category_id == main_category_id)
+        if sub_category_id is not None:
+            stmt = stmt.where(Event.sub_category_id == sub_category_id)
+        result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
 

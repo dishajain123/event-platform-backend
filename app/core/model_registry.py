@@ -12,6 +12,7 @@ from app.modules.identity import models as identity_models  # noqa: F401
 from app.modules.rbac import models as rbac_models  # noqa: F401
 from app.modules.organizations import models as organizations_models  # noqa: F401
 from app.modules.audit_log import models as audit_log_models  # noqa: F401
+from app.modules.event_categories import models as event_categories_models  # noqa: F401
 from app.modules.events import models as events_models  # noqa: F401
 from app.modules.config_engine import models as config_engine_models  # noqa: F401
 from app.modules.registrations import models as registrations_models  # noqa: F401

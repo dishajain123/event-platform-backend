@@ -9,6 +9,7 @@ from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.modules.config_engine.models import EventConfiguration
 from app.modules.events.models import Event, EventStatus
@@ -22,10 +23,27 @@ class ReportRepository:
         self.db = db
 
     async def get_event(self, event_id: uuid.UUID) -> Event | None:
-        return await self.db.get(Event, event_id)
+        result = await self.db.execute(
+            select(Event)
+            .options(
+                selectinload(Event.main_category),
+                selectinload(Event.sub_category),
+                selectinload(Event.organizer),
+                selectinload(Event.configuration),
+            )
+            .where(Event.id == event_id)
+        )
+        return result.scalar_one_or_none()
 
     async def list_events(self) -> list[Event]:
-        result = await self.db.execute(select(Event))
+        result = await self.db.execute(
+            select(Event).options(
+                selectinload(Event.main_category),
+                selectinload(Event.sub_category),
+                selectinload(Event.organizer),
+                selectinload(Event.configuration),
+            )
+        )
         return list(result.scalars().all())
 
     async def get_event_capacity(self, event_id: uuid.UUID) -> int | None:

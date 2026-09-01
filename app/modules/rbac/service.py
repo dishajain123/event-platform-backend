@@ -9,6 +9,8 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
+from app.exceptions import PermissionDeniedError
+from app.core.permissions import get_active_assignments
 from app.modules.rbac.exceptions import RoleNotFoundError, ScopeNotAllowedError, ScopeRequiredError
 from app.modules.rbac.models import GLOBAL_ROLES, SCOPED_ROLES, AssignmentStatus, RoleAssignment, RoleName
 from app.modules.rbac.repository import RoleAssignmentRepository, RoleRepository
@@ -31,6 +33,26 @@ class RBACService:
         role = await self.roles.get_by_name(role_name)
         if role is None:
             raise RoleNotFoundError(f"Role '{role_name}' is not a recognized role.")
+
+        actor_roles = await self.get_active_role_names_for_user(assigned_by)
+        allowed_roles: set[RoleName] = set()
+        if RoleName.SUPER_ADMIN in actor_roles:
+            allowed_roles.update(
+                {
+                    RoleName.OPERATIONS_ADMIN,
+                    RoleName.FINANCE_ADMIN,
+                    RoleName.FINANCE_OPERATOR,
+                    RoleName.FINANCE_AUDITOR,
+                    RoleName.EVENT_MANAGER,
+                }
+            )
+        if RoleName.OPERATIONS_ADMIN in actor_roles:
+            allowed_roles.add(RoleName.EVENT_MANAGER)
+        if RoleName.FINANCE_ADMIN in actor_roles:
+            allowed_roles.update({RoleName.FINANCE_OPERATOR, RoleName.FINANCE_AUDITOR})
+
+        if role_name not in allowed_roles:
+            raise PermissionDeniedError("You don't have permission to assign this role.")
 
         if role_name in GLOBAL_ROLES and event_id is not None:
             raise ScopeNotAllowedError(f"'{role_name}' is a global role and cannot be scoped to an event.")
@@ -57,6 +79,37 @@ class RBACService:
 
     async def list_roles(self):
         return await self.roles.list_all()
+
+    async def get_active_role_names_for_user(self, user_id: uuid.UUID) -> set[RoleName]:
+        active_assignments = await get_active_assignments(self.db, user_id)
+        role_names: set[RoleName] = set()
+        for assignment in active_assignments:
+            role = await self.roles.get_by_id(assignment.role_id)
+            if role is not None:
+                role_names.add(role.name)
+        return role_names
+
+    async def list_assignable_roles_for_user(self, user_id: uuid.UUID) -> list:
+        role_names = await self.get_active_role_names_for_user(user_id)
+        allowed: set[RoleName] = set()
+
+        if RoleName.SUPER_ADMIN in role_names:
+            allowed.update(
+                {
+                    RoleName.OPERATIONS_ADMIN,
+                    RoleName.FINANCE_ADMIN,
+                    RoleName.FINANCE_OPERATOR,
+                    RoleName.FINANCE_AUDITOR,
+                    RoleName.EVENT_MANAGER,
+                }
+            )
+        if RoleName.OPERATIONS_ADMIN in role_names:
+            allowed.add(RoleName.EVENT_MANAGER)
+        if RoleName.FINANCE_ADMIN in role_names:
+            allowed.update({RoleName.FINANCE_OPERATOR, RoleName.FINANCE_AUDITOR})
+
+        roles = await self.roles.list_all()
+        return [role for role in roles if role.name in allowed]
 
     async def list_my_active_role_assignments(self, user_id: uuid.UUID) -> list[dict]:
         """

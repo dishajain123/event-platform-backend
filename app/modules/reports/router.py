@@ -23,6 +23,7 @@ from app.modules.reports.schemas import (
     PlatformOperationsReportOut,
 )
 from app.modules.reports.service import ReportService
+from app.modules.events.schemas import EventOperationsOverviewOut
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -39,6 +40,16 @@ def get_report_service(db: AsyncSession = Depends(get_db)) -> ReportService:
 async def get_platform_operations_report(service: ReportService = Depends(get_report_service)):
     """Called by: console (Operations Admin / Super Admin) — platform-wide dashboard."""
     return await service.get_platform_operations_report()
+
+
+@router.get(
+    "/overview",
+    response_model=EventOperationsOverviewOut,
+    dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN))],
+)
+async def get_platform_operations_overview(service: ReportService = Depends(get_report_service)):
+    """Called by: console (Operations Admin / Super Admin) — the main operations dashboard."""
+    return await service.get_platform_operations_overview()
 
 
 @router.get(

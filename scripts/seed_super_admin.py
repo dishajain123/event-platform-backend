@@ -2,8 +2,9 @@
 Run once, at deployment time, to seed the built-in roles and create the
 first Super Admin account. Every other account in the platform is
 created afterward through the normal API (Super Admin creates
-Operations Admin / Finance Admin; Operations Admin creates every
-field-role account) — this script is the one manual bootstrap step.
+Operations Admin / Finance Admin; Operations Admin creates Event
+Manager accounts; Finance Admin creates Finance Operator / Auditor
+accounts) — this script is the one manual bootstrap step.
 
 Usage:
     python -m scripts.seed_super_admin --mobile +919999999999
@@ -22,6 +23,15 @@ from app.database import AsyncSessionLocal
 from app.modules.identity.models import User
 from app.modules.rbac.models import GLOBAL_ROLES, SCOPED_ROLES, Role, RoleAssignment, RoleName
 
+SEED_ROLE_NAMES = (
+    RoleName.SUPER_ADMIN,
+    RoleName.OPERATIONS_ADMIN,
+    RoleName.FINANCE_ADMIN,
+    RoleName.FINANCE_OPERATOR,
+    RoleName.FINANCE_AUDITOR,
+    RoleName.EVENT_MANAGER,
+)
+
 
 async def seed_roles(db) -> None:
     from sqlalchemy import select
@@ -29,7 +39,7 @@ async def seed_roles(db) -> None:
     existing = (await db.execute(select(Role.name))).scalars().all()
     existing_names = set(existing)
 
-    for role_name in RoleName:
+    for role_name in SEED_ROLE_NAMES:
         if role_name in existing_names:
             continue
         db.add(

@@ -10,6 +10,8 @@ from app.database import get_db
 from app.dependencies import get_current_user, require_role
 from app.modules.identity.models import User
 from app.modules.identity.schemas import (
+    AccountOut,
+    AccountStatusUpdateIn,
     AdminUserLookupIn,
     IdentityDocumentIn,
     IdentityDocumentOut,
@@ -87,21 +89,55 @@ async def logout() -> None:
 )
 async def find_or_create_user_for_admin_provisioning(
     payload: AdminUserLookupIn,
-    current_user: User = Depends(require_role(RoleName.SUPER_ADMIN, RoleName.FINANCE_ADMIN)),
+    current_user: User = Depends(
+        require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN, RoleName.FINANCE_ADMIN)
+    ),
     service: IdentityService = Depends(get_identity_service),
 ) -> UserOut:
     """
     Called by: console only — Super Admin provisioning Operations Admin/
     Finance Admin, or Finance Admin provisioning Finance Operator/Auditor.
     Returns the existing user for this mobile number, or creates a bare
-    account if none exists yet, so the Console's Staff/Admin Accounts
-    screen can immediately follow up with POST /users/{user_id}/role-
+    account if none exists yet, so the unified Account Management screen
+    can immediately follow up with POST /users/{user_id}/role-
     assignments — closing the gap where that endpoint requires a
     user_id the Console had no way to obtain for someone who'd never
     opened the public app.
     """
     user, _created = await service.find_or_create_for_admin_provisioning(
         payload.mobile_number, payload.name
+    )
+    return UserOut.model_validate(user)
+
+
+@router.get(
+    "/users/accounts",
+    response_model=list[AccountOut],
+    dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN, RoleName.FINANCE_ADMIN))],
+)
+async def list_accounts(service: IdentityService = Depends(get_identity_service)) -> list[AccountOut]:
+    """Called by: console account management."""
+    return [AccountOut.model_validate(account) for account in await service.list_accounts()]
+
+
+@router.patch(
+    "/users/{user_id}/status",
+    response_model=UserOut,
+    dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN, RoleName.FINANCE_ADMIN))],
+)
+async def update_account_status(
+    user_id: str,
+    payload: AccountStatusUpdateIn,
+    current_user: User = Depends(get_current_user),
+    service: IdentityService = Depends(get_identity_service),
+) -> UserOut:
+    """Called by: console account management."""
+    import uuid as _uuid
+
+    user = await service.update_account_status(
+        actor=current_user,
+        target_user_id=_uuid.UUID(user_id),
+        is_active=payload.is_active,
     )
     return UserOut.model_validate(user)
 

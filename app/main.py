@@ -19,6 +19,7 @@ from app.modules.events.router import router as events_router
 from app.modules.funnels.router import router as funnels_router
 from app.modules.guardians.router import router as guardians_router
 from app.modules.identity.router import router as identity_router
+from app.modules.event_categories.router import router as event_categories_router
 from app.modules.media.router import media_router, router as media_router_by_event
 from app.modules.assistance.router import router as assistance_router
 from app.modules.notifications.router import router as notifications_router, templates_router as notification_templates_router
@@ -63,6 +64,11 @@ app.include_router(
 
 app.include_router(
     events_router,
+    prefix=settings.api_v1_prefix,
+)
+
+app.include_router(
+    event_categories_router,
     prefix=settings.api_v1_prefix,
 )
 

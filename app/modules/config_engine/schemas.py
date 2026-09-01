@@ -40,6 +40,7 @@ class EventConfigurationIn(BaseModel):
     currency: str = "INR"
     capacity: int | None = None
     approval_required: bool = False
+    details: dict = Field(default_factory=dict)
     rules: dict = Field(default_factory=dict)
     discount_rules: dict | None = None
 
@@ -54,6 +55,7 @@ class EventConfigurationOut(BaseModel):
     currency: str
     capacity: int | None
     approval_required: bool
+    details: dict
     rules: dict
     discount_rules: dict | None
 

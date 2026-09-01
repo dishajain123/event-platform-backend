@@ -4,6 +4,8 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.modules.identity.models import DocumentType, VerificationStatus
+from app.modules.identity.phone import normalize_mobile_number
+from app.modules.rbac.models import RoleName
 
 
 class OTPRequestIn(BaseModel):
@@ -12,10 +14,7 @@ class OTPRequestIn(BaseModel):
     @field_validator("mobile_number")
     @classmethod
     def digits_only(cls, v: str) -> str:
-        cleaned = v.strip()
-        if not cleaned.lstrip("+").isdigit():
-            raise ValueError("mobile_number must contain only digits (optionally with a leading +)")
-        return cleaned
+        return normalize_mobile_number(v)
 
 
 class OTPRequestOut(BaseModel):
@@ -26,6 +25,11 @@ class OTPRequestOut(BaseModel):
 class OTPVerifyIn(BaseModel):
     mobile_number: str
     otp: str = Field(..., min_length=4, max_length=8)
+
+    @field_validator("mobile_number")
+    @classmethod
+    def normalize_mobile_number_value(cls, v: str) -> str:
+        return normalize_mobile_number(v)
 
 
 class TokenPairOut(BaseModel):
@@ -45,6 +49,27 @@ class UserOut(BaseModel):
     mobile_number: str
     name: str | None
     email: str | None
+    is_active: bool
+
+
+class AccountRoleOut(BaseModel):
+    role_name: RoleName
+    event_id: uuid.UUID | None
+    status: str
+
+
+class AccountOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    mobile_number: str
+    name: str | None
+    email: str | None
+    is_active: bool
+    roles: list[AccountRoleOut]
+
+
+class AccountStatusUpdateIn(BaseModel):
     is_active: bool
 
 
@@ -79,7 +104,4 @@ class AdminUserLookupIn(BaseModel):
     @field_validator("mobile_number")
     @classmethod
     def digits_only(cls, v: str) -> str:
-        cleaned = v.strip()
-        if not cleaned.lstrip("+").isdigit():
-            raise ValueError("mobile_number must contain only digits (optionally with a leading +)")
-        return cleaned
+        return normalize_mobile_number(v)

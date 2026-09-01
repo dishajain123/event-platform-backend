@@ -23,10 +23,13 @@ from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDT
 
 class RoleName(StrEnum):
     """
-    The platform's built-in role names. Deliberately generic — what an
-    organization CALLS "Staff Lead" on screen (Volunteer Head, Marshal,
-    Crew Chief, whatever) is a display-label config concern, not this
-    enum. The enum is the stable, code-level identity of the role.
+    The platform's built-in role names.
+
+    The console now treats Operations Admin, Finance Admin, Finance
+    Operator, Finance Auditor, and Event Manager as the supported
+    account-management roles. The older event_coordinator/staff_lead/
+    staff_member names remain only for backward compatibility with
+    existing data and legacy mobile flows.
     """
 
     SUPER_ADMIN = "super_admin"
@@ -34,10 +37,10 @@ class RoleName(StrEnum):
     FINANCE_ADMIN = "finance_admin"
     FINANCE_OPERATOR = "finance_operator"
     FINANCE_AUDITOR = "finance_auditor"
-    EVENT_MANAGER = "event_manager"          # scoped — Console (config+reports only) + mobile Staff Mode
-    EVENT_COORDINATOR = "event_coordinator"  # scoped — mobile Staff Mode only
-    STAFF_LEAD = "staff_lead"                # scoped — mobile Staff Mode only
-    STAFF_MEMBER = "staff_member"            # scoped — mobile Staff Mode only
+    EVENT_MANAGER = "event_manager"          # scoped — console + mobile Staff Mode
+    EVENT_COORDINATOR = "event_coordinator"  # legacy scoped — mobile Staff Mode only
+    STAFF_LEAD = "staff_lead"                # legacy scoped — mobile Staff Mode only
+    STAFF_MEMBER = "staff_member"            # legacy scoped — mobile Staff Mode only
 
 
 # Roles that apply platform-wide and are never tied to one event.
