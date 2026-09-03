@@ -148,6 +148,25 @@ async def list_staff_assignment_history(
     )
 
 
+@accept_router.get(
+    "/staff/assignments/mine",
+    response_model=list[StaffAssignmentOut],
+)
+async def list_my_staff_assignments(
+    current_user: User = Depends(get_current_user),
+    service: StaffService = Depends(get_staff_service),
+):
+    """
+    Called by: mobile (Pending Assignments + My Events screens). Closes a
+    real gap — previously an invitee had no way to discover a staff
+    invitation exists at all (no notification is sent on creation, and
+    every other listing endpoint on this router is Event-Manager/console-
+    gated). Own data only, by mobile number — see
+    StaffService.list_my_assignments.
+    """
+    return await service.list_my_assignments(current_user)
+
+
 @accept_router.post(
     "/staff/assignments/{assignment_id}/accept",
     response_model=StaffAssignmentOut,

@@ -221,3 +221,48 @@ async def test_a_non_scoped_role_cannot_be_used_as_a_staff_role(db_session):
             role_label="Should not work",
             full_name="Staff User",
         )   
+
+@pytest.mark.asyncio
+async def test_invitee_can_discover_their_own_pending_and_active_assignments(db_session):
+    """
+    Regression test for a real, significant gap found while building the
+    mobile app's Pending Assignments / My Events screens: an invitee had
+    NO way whatsoever to discover a staff invitation exists — no
+    notification is sent on creation, and every other listing endpoint
+    on this router is Event-Manager/console-gated. Without this, staff
+    could never accept an invitation through the app at all.
+    """
+    ctx = await _make_event(db_session)
+    event_a, event_b = ctx["event_a"], ctx["event_b"]
+    manager_a, manager_b, staff_user = ctx["manager_a"], ctx["manager_b"], ctx["staff_user"]
+    service = StaffService(db_session)
+
+    # Invited to event A, still pending.
+    invited_assignment = await service.create_assignment(
+        event_id=event_a.id, actor=manager_a, invitee_mobile=staff_user.mobile_number,
+        role_name=RoleName.STAFF_MEMBER, role_label="Gate Volunteer",
+    )
+
+    # Invited to event B, and this one gets accepted.
+    accepted_assignment = await service.create_assignment(
+        event_id=event_b.id, actor=manager_b, invitee_mobile=staff_user.mobile_number,
+        role_name=RoleName.STAFF_MEMBER, role_label="Gate Volunteer",
+    )
+    await service.accept_assignment(accepted_assignment.id, staff_user)
+
+    # The invitee can now see BOTH — pending and active — in one call.
+    mine = await service.list_my_assignments(staff_user)
+    mine_ids = {a.id for a in mine}
+    assert invited_assignment.id in mine_ids
+    assert accepted_assignment.id in mine_ids
+    assert len(mine) == 2
+
+    statuses = {a.id: a.status for a in mine}
+    assert statuses[invited_assignment.id] == StaffAssignmentStatus.INVITED
+    assert statuses[accepted_assignment.id] == StaffAssignmentStatus.ACTIVE
+
+    # A completely unrelated user sees none of these.
+    outsider = User(mobile_number="+919400000099")
+    db_session.add(outsider)
+    await db_session.flush()
+    assert await service.list_my_assignments(outsider) == []

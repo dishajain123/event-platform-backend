@@ -76,8 +76,8 @@ async def test_team_invite_respond_submit_and_approve(db_session):
     assert registration is not None
     assert registration.team_id == team.id
     assert registration.participation_type == "team"
-    # No fee configured and no approval required at submission time -> auto-approved immediately.
-    assert registration.status == RegistrationStatus.APPROVED
+    # No fee configured and no approval required at submission time -> auto-approved and ticketed immediately.
+    assert registration.status == RegistrationStatus.CONFIRMED
 
     team = await service.approve_team(team.id, approver)
     assert team.status == TeamStatus.APPROVED
@@ -132,7 +132,8 @@ async def test_team_registration_respects_approval_required_before_payment(db_se
     team = await service.approve_team(team.id, approver)
     assert team.status == TeamStatus.APPROVED
     registration = await RegistrationRepository(db_session).get_by_id(team.registration_id)
-    assert registration.status == RegistrationStatus.APPROVED
+    # Free event -> ticket issued immediately on approval, registration reaches CONFIRMED.
+    assert registration.status == RegistrationStatus.CONFIRMED
 
 
 @pytest.mark.asyncio
@@ -152,3 +153,50 @@ async def test_team_list_route_requires_event_scope_for_non_global_users(db_sess
 
     with pytest.raises(PermissionDeniedError):
         await list_teams(event_id=event.id, current_user=outsider, db=db_session, service=service)
+
+
+@pytest.mark.asyncio
+async def test_captain_and_member_can_view_their_own_team_but_outsiders_cannot(db_session):
+    """
+    Regression test for a real gap found while building the mobile app's
+    Team Roster screen: GET /teams was Event-Manager/console-only, so a
+    team's own captain had no way whatsoever to re-check their team's
+    state (e.g. after reopening the app) — only the create/submit
+    response ever showed it, and only at that one moment.
+    """
+    from app.exceptions import PermissionDeniedError
+
+    event = await _make_event(db_session)
+    service = TeamService(db_session)
+
+    captain = User(mobile_number="+919300000101")
+    invitee = User(mobile_number="+919300000102")
+    outsider = User(mobile_number="+919300000103")
+    db_session.add_all([captain, invitee, outsider])
+    await db_session.flush()
+
+    team = await service.create_team(event.id, captain, "Regression Test Team")
+
+    # Captain can view their own team.
+    visible_to_captain = await service.get_team_visible_to_actor(team.id, captain)
+    assert visible_to_captain.id == team.id
+
+    # An invited-but-not-yet-responded person can also see it (Section 8's
+    # Team Invitation Response screen needs this to show what they're
+    # being invited into).
+    await service.invite_member(team.id, captain, invitee.mobile_number)
+    visible_to_invitee = await service.get_team_visible_to_actor(team.id, invitee)
+    assert visible_to_invitee.id == team.id
+
+    # A complete outsider cannot.
+    with pytest.raises(PermissionDeniedError):
+        await service.get_team_visible_to_actor(team.id, outsider)
+
+    # Members list is visible to the captain and shows the captain as a
+    # member (create_team adds them automatically).
+    members = await service.list_members_visible_to_actor(team.id, captain)
+    assert any(m.user_id == captain.id and m.is_captain for m in members)
+
+    # An outsider cannot see members either.
+    with pytest.raises(PermissionDeniedError):
+        await service.list_members_visible_to_actor(team.id, outsider)

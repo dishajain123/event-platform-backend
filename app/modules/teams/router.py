@@ -19,11 +19,13 @@ from app.core.permissions import user_has_scoped_role
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.modules.identity.models import User
+from app.modules.rbac.models import RoleName
 from app.modules.teams.schemas import (
     TeamCreateIn,
     TeamInvitationIn,
     TeamInvitationOut,
     TeamInvitationResponseIn,
+    TeamMemberOut,
     TeamOut,
 )
 from app.modules.teams.service import TeamService
@@ -105,6 +107,33 @@ async def list_teams(
     if not is_global_console and not is_event_manager:
         raise PermissionDeniedError("You don't have permission to view teams for this event.")
     return await service.list_teams(event_id)
+
+
+@router.get("/{team_id}", response_model=TeamOut)
+async def get_team(
+    team_id: str,
+    current_user: User = Depends(get_current_user),
+    service: TeamService = Depends(get_team_service),
+):
+    """
+    Called by: mobile (a team's captain or an accepted/invited member
+    checking on their own team — see get_team_visible_to_actor for why
+    this endpoint exists at all), and console/Event Manager. Closes a
+    real gap: previously the only way to see team state was the
+    create/submit response at that one moment — a captain reopening the
+    app had no way to check on their team at all.
+    """
+    return await service.get_team_visible_to_actor(uuid.UUID(team_id), current_user)
+
+
+@router.get("/{team_id}/members", response_model=list[TeamMemberOut])
+async def list_team_members(
+    team_id: str,
+    current_user: User = Depends(get_current_user),
+    service: TeamService = Depends(get_team_service),
+):
+    """Called by: mobile (Team Roster screen) and console/Event Manager."""
+    return await service.list_members_visible_to_actor(uuid.UUID(team_id), current_user)
 
 
 @router.post("/{team_id}/approve", response_model=TeamOut)

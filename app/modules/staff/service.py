@@ -146,6 +146,16 @@ class StaffService:
             raise PermissionDeniedError("You don't have permission to view staff for this event.")
         return await self.assignments.list_for_event(event_id)
 
+    async def list_my_assignments(self, actor: User) -> list[StaffAssignment]:
+        """
+        Closes a real gap: the only way to see StaffAssignment data was
+        as the inviting Event Manager — the invitee themselves had no
+        endpoint at all. This is what the mobile app's Pending
+        Assignments (status=invited) and My Events (status=active)
+        screens actually read from.
+        """
+        return await self.assignments.list_for_invitee_mobile(actor.mobile_number)
+
     async def accept_assignment(self, assignment_id: uuid.UUID, actor: User) -> StaffAssignment:
         assignment = await self._get_assignment_or_raise(assignment_id)
         if assignment.status == StaffAssignmentStatus.REVOKED:

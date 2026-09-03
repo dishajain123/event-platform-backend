@@ -80,3 +80,58 @@ async def test_resend_before_cooldown_expires_is_rejected(db_session, fake_redis
     await service.request_otp(mobile)
     with pytest.raises(OTPResendTooSoonError):
         await service.request_otp(mobile)
+
+@pytest.mark.asyncio
+async def test_user_can_update_their_own_name_and_email(db_session, fake_redis):
+    """
+    Regression test for a real gap found while building the mobile app's
+    Profile screen: there was no way whatsoever for a user to change
+    their own name or email — GET /users/me was the only endpoint
+    touching a user's own profile at all.
+    """
+    from app.modules.identity.models import User
+
+    user = User(mobile_number="+919700000001")
+    db_session.add(user)
+    await db_session.flush()
+    assert user.name is None
+    assert user.email is None
+
+    service = IdentityService(db_session, fake_redis)
+    updated = await service.update_own_profile(user, name="Asha Rao", email="asha@example.com")
+    assert updated.name == "Asha Rao"
+    assert updated.email == "asha@example.com"
+
+    # A partial update (name only) leaves the other field untouched.
+    updated_again = await service.update_own_profile(user, name="Asha R.", email=None)
+    assert updated_again.name == "Asha R."
+    assert updated_again.email == "asha@example.com"
+
+
+@pytest.mark.asyncio
+async def test_user_can_list_their_own_identity_documents_after_uploading(db_session, fake_redis, monkeypatch):
+    """
+    Regression test for a real gap found while building the mobile app's
+    Profile screen: list_identity_documents() already existed correctly
+    implemented in the service, but only the upload (POST) endpoint was
+    ever wired to a router endpoint — a user who'd uploaded a document
+    had no way to ever see it (or its verification status) again.
+    """
+    from cryptography.fernet import Fernet
+    from app.modules.identity import service as identity_service_module
+    from app.modules.identity.models import DocumentType, User
+
+    monkeypatch.setattr(
+        identity_service_module.settings, "identity_doc_encryption_key", Fernet.generate_key().decode()
+    )
+
+    user = User(mobile_number="+919700000002")
+    db_session.add(user)
+    await db_session.flush()
+
+    service = IdentityService(db_session, fake_redis)
+    await service.add_identity_document(user.id, DocumentType.AADHAAR, "123412341234")
+
+    docs = await service.list_identity_documents(user.id)
+    assert len(docs) == 1
+    assert docs[0].document_type == DocumentType.AADHAAR

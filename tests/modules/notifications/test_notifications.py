@@ -109,3 +109,38 @@ async def test_targeted_send_fans_out_and_marks_delivery_status(db_session):
 
     templates = await service.list_templates()
     assert templates == []
+
+
+@pytest.mark.asyncio
+async def test_recipient_can_mark_their_own_notification_read(db_session):
+    """
+    Regression test for a real gap found while building the mobile app's
+    notification inbox: mark_read() was already correctly implemented
+    and permission-checked in the service layer, but was never actually
+    exposed through any router endpoint — there was no way whatsoever to
+    change a notification's read_at through the API.
+    """
+    from app.exceptions import PermissionDeniedError
+
+    event, coordinator, recipient_a, recipient_b = await _make_event(db_session)
+    service = NotificationService(db_session)
+
+    await RegistrationService(db_session).create_registration(
+        event_id=event.id, actor=recipient_a, participation_type="individual",
+        date_of_birth=None, child_id=None, team_id=None,
+        documents_provided=[], answers={}, participants=[],
+    )
+    sent = await service.send_notifications(
+        actor=coordinator, title="Reminder", body="Doors open at 9am.",
+        channels=[NotificationChannel.PUSH], event_id=event.id,
+        participation_types=["individual"], registration_statuses=[], recipient_user_ids=[],
+    )
+    notification = sent[0]
+    assert notification.read_at is None
+
+    updated = await service.mark_read(notification.id, recipient_a)
+    assert updated.read_at is not None
+
+    # Someone else can't mark another person's notification read.
+    with pytest.raises(PermissionDeniedError):
+        await service.mark_read(notification.id, recipient_b)

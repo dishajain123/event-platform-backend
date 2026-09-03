@@ -119,3 +119,54 @@ async def test_offline_checkin_sync_creates_checkin_and_blocks_duplicate_scan(db
 
     with pytest.raises(DuplicateCheckInError):
         await ticket_service.check_in(refreshed_ticket.id, context["staff"], source=CheckInSource.ONLINE)
+
+
+@pytest.mark.asyncio
+async def test_online_check_in_can_resolve_a_scanned_ticket_by_payload(db_session):
+    """
+    Regression test for a real gap found while building the mobile app's
+    QR scanner: POST /{ticket_id}/check-in requires the ticket's real
+    UUID, but a scanned QR's qr_payload only ever contains
+    "{ticket_code}:{registration_id}:{payment_id_or_free}" — never the
+    ticket's UUID. The offline sync path already resolved this
+    internally; the online path (Staff Mode's single highest-frequency
+    action) had no equivalent at all.
+    """
+    ctx = await _make_ticket_context(db_session)
+    service = TicketService(db_session)
+    ticket = ctx["ticket"]
+
+    resolved = await service.resolve_by_scan_payload(ticket.qr_payload, ticket.qr_signature)
+    assert resolved.id == ticket.id
+
+    # The resolved ticket's real UUID is what actually unlocks check-in.
+    check_in = await service.check_in(resolved.id, ctx["staff"], venue_id=None)
+    assert check_in.ticket_id == ticket.id
+
+    # A tampered/wrong signature is correctly rejected, not silently resolved.
+    from app.modules.tickets.exceptions import InvalidTicketStateError
+
+    with pytest.raises(InvalidTicketStateError):
+        await service.resolve_by_scan_payload(ticket.qr_payload, "not-the-real-signature")
+
+
+@pytest.mark.asyncio
+async def test_manual_ticket_code_lookup_works_without_a_signature(db_session):
+    """
+    The manual-entry fallback for a damaged/unreadable QR (Section 8,
+    Phase 5) — a human can't type a cryptographic signature, so this
+    path deliberately looks up by ticket_code alone, relying on the
+    caller already being an authenticated, permission-checked staff
+    account rather than payload-signature verification.
+    """
+    ctx = await _make_ticket_context(db_session)
+    service = TicketService(db_session)
+    ticket = ctx["ticket"]
+
+    resolved = await service.resolve_by_ticket_code(ticket.ticket_code, ctx["staff"])
+    assert resolved.id == ticket.id
+
+    from app.modules.tickets.exceptions import TicketNotFoundError
+
+    with pytest.raises(TicketNotFoundError):
+        await service.resolve_by_ticket_code("TKT-doesnotexist00", ctx["staff"])

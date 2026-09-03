@@ -23,14 +23,19 @@ from app.database import AsyncSessionLocal
 from app.modules.identity.models import User
 from app.modules.rbac.models import GLOBAL_ROLES, SCOPED_ROLES, Role, RoleAssignment, RoleName
 
-SEED_ROLE_NAMES = (
-    RoleName.SUPER_ADMIN,
-    RoleName.OPERATIONS_ADMIN,
-    RoleName.FINANCE_ADMIN,
-    RoleName.FINANCE_OPERATOR,
-    RoleName.FINANCE_AUDITOR,
-    RoleName.EVENT_MANAGER,
-)
+SEED_ROLE_NAMES = tuple(GLOBAL_ROLES | SCOPED_ROLES)
+# BUG FIX: previously a hand-maintained tuple that omitted three roles
+# entirely (EVENT_COORDINATOR, STAFF_LEAD, STAFF_MEMBER — the mobile-only
+# Staff Mode roles), meaning no fresh deployment following this script's
+# own documented bootstrap process could ever seed them into the roles
+# table — making it structurally impossible to ever create OR accept a
+# StaffAssignment using any of the three, since assign_role/
+# accept_assignment both require a real Role row to exist first. Found
+# by actually exercising the mobile Staff Mode invite-and-accept flow
+# end-to-end, not from reading the code alone. Deriving this from
+# GLOBAL_ROLES | SCOPED_ROLES (app/modules/rbac/models.py's own
+# authoritative role partition, already used below for is_scoped) means
+# this can never drift out of sync with the RoleName enum again.
 
 
 async def seed_roles(db) -> None:

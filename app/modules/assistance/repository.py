@@ -31,3 +31,17 @@ class AssistanceRepository:
             select(AssistanceRequest).where(AssistanceRequest.registration_id == registration_id)
         )
         return result.scalar_one_or_none()
+
+    async def list_for_requester(self, requester_user_id: uuid.UUID) -> list[AssistanceRequest]:
+        """
+        BUG FIX: found while building the mobile app's assistance-request
+        status screen — list_for_event is Event-Manager-only
+        (_can_review_event), so a participant who actually SUBMITTED a
+        fee-waiver request had no way whatsoever to check its status
+        afterward. Same class of gap as the team/staff-assignment
+        visibility issues found in earlier phases.
+        """
+        result = await self.db.execute(
+            select(AssistanceRequest).where(AssistanceRequest.requester_user_id == requester_user_id)
+        )
+        return list(result.scalars().all())

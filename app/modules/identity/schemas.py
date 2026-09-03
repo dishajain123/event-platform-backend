@@ -52,6 +52,20 @@ class UserOut(BaseModel):
     is_active: bool
 
 
+class UserUpdateIn(BaseModel):
+    """
+    BUG FIX: found while building the mobile app's Profile screen —
+    there was no way whatsoever for a user to change their own name or
+    email; GET /users/me was the only endpoint touching a user's own
+    profile at all. mobile_number is deliberately NOT editable here — a
+    number change is a more sensitive operation (it's the account's
+    login identity) than this plan's Phase 7 scope covers.
+    """
+
+    name: str | None = None
+    email: str | None = None
+
+
 class AccountRoleOut(BaseModel):
     role_name: RoleName
     event_id: uuid.UUID | None

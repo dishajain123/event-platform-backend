@@ -56,3 +56,14 @@ class OfflineCheckInIn(CheckInIn):
 
 class OfflineCheckInBatchIn(BaseModel):
     scans: list[OfflineCheckInIn]
+
+
+class ResolveTicketIn(BaseModel):
+    """
+    Request body for GET-by-scan resolution (Section 9, Phase 5's fix):
+    the online check-in scanner's first call after every scan, before it
+    can call POST /{ticket_id}/check-in with a real UUID.
+    """
+
+    scan_payload: str
+    qr_signature: str

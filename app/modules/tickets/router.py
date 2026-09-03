@@ -20,7 +20,7 @@ from app.dependencies import get_current_user
 from app.modules.identity.models import User
 from app.modules.rbac.models import RoleName
 from app.modules.tickets.models import CheckInSource
-from app.modules.tickets.schemas import CheckInIn, CheckInOut, OfflineCheckInBatchIn, TicketOut
+from app.modules.tickets.schemas import CheckInIn, CheckInOut, OfflineCheckInBatchIn, ResolveTicketIn, TicketOut
 from app.modules.tickets.service import TicketService
 
 router = APIRouter(prefix="/tickets", tags=["tickets"])
@@ -37,6 +37,47 @@ async def list_my_tickets(
     service: TicketService = Depends(get_ticket_service),
 ):
     return await service.list_my_tickets(current_user)
+
+
+@router.post("/resolve", response_model=TicketOut)
+async def resolve_ticket_by_scan(
+    payload: ResolveTicketIn,
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service),
+):
+    """
+    Called by: mobile Staff Mode's QR scanner, immediately after every
+    scan — resolves a scanned qr_payload into the real ticket (and its
+    UUID `id`) that POST /{ticket_id}/check-in requires. Declared before
+    GET /{ticket_id} below so the literal "/resolve" path is never
+    swallowed by the parameterized route.
+    """
+    ticket = await service.resolve_by_scan_payload(payload.scan_payload, payload.qr_signature)
+    if not await service.can_access_ticket(ticket, current_user):
+        from app.exceptions import PermissionDeniedError
+
+        raise PermissionDeniedError("You don't have permission to check in this ticket.")
+    return ticket
+
+
+@router.get("/by-code/{ticket_code}", response_model=TicketOut)
+async def resolve_ticket_by_code(
+    ticket_code: str,
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service),
+):
+    """
+    Called by: mobile Staff Mode's manual-entry fallback, for a
+    damaged/unreadable QR (Section 8, Phase 5). Declared before
+    GET /{ticket_id} so "/by-code/..." is never swallowed by the
+    parameterized route.
+    """
+    ticket = await service.resolve_by_ticket_code(ticket_code, current_user)
+    if not await service.can_access_ticket(ticket, current_user):
+        from app.exceptions import PermissionDeniedError
+
+        raise PermissionDeniedError("You don't have permission to check in this ticket.")
+    return ticket
 
 
 @router.get("/{ticket_id}", response_model=TicketOut)

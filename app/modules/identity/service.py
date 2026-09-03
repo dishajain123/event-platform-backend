@@ -229,6 +229,33 @@ class IdentityService:
         await self.db.refresh(target_user)
         return target_user
 
+    async def update_own_profile(self, actor: User, *, name: str | None, email: str | None) -> User:
+        """
+        Closes a real gap: previously there was no way whatsoever for a
+        user to change their own name or email — GET /users/me was the
+        only endpoint touching a user's own profile at all. Deliberately
+        takes `actor` as both the target and the caller (no target_user_id
+        parameter) so this can never be used to edit someone else's
+        profile — that would need a real admin-provisioning flow, not this.
+        """
+        before = {"name": actor.name, "email": actor.email}
+        if name is not None:
+            actor.name = name
+        if email is not None:
+            actor.email = email
+        await write_audit_log(
+            self.db,
+            entity_type="user",
+            entity_id=actor.id,
+            action="updated_own_profile",
+            actor_user_id=actor.id,
+            before_value=before,
+            after_value={"name": actor.name, "email": actor.email},
+        )
+        await self.db.commit()
+        await self.db.refresh(actor)
+        return actor
+
     # ---- Identity documents ----
 
     def _fernet(self) -> Fernet:

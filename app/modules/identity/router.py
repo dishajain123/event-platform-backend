@@ -21,6 +21,7 @@ from app.modules.identity.schemas import (
     RefreshTokenIn,
     TokenPairOut,
     UserOut,
+    UserUpdateIn,
 )
 from app.modules.identity.service import IdentityService
 from app.modules.rbac.models import RoleName
@@ -148,6 +149,21 @@ async def get_my_profile(current_user: User = Depends(get_current_user)) -> User
     return current_user
 
 
+@router.patch("/users/me", response_model=UserOut)
+async def update_my_profile(
+    payload: UserUpdateIn,
+    current_user: User = Depends(get_current_user),
+    service: IdentityService = Depends(get_identity_service),
+) -> User:
+    """
+    Called by: mobile (Profile screen, Phase 7). Closes a real gap —
+    previously there was no way whatsoever to change your own name or
+    email; GET /users/me was the only endpoint touching a user's own
+    profile at all.
+    """
+    return await service.update_own_profile(current_user, name=payload.name, email=payload.email)
+
+
 @router.post(
     "/users/me/identity-documents",
     response_model=IdentityDocumentOut,
@@ -163,3 +179,19 @@ async def add_my_identity_document(
         current_user.id, payload.document_type, payload.document_number
     )
     return IdentityDocumentOut.model_validate(doc)
+
+
+@router.get("/users/me/identity-documents", response_model=list[IdentityDocumentOut])
+async def list_my_identity_documents(
+    current_user: User = Depends(get_current_user),
+    service: IdentityService = Depends(get_identity_service),
+) -> list[IdentityDocumentOut]:
+    """
+    Called by: mobile (Profile screen, Phase 7). Closes a real gap — the
+    service's list_identity_documents() already existed correctly
+    implemented, but only POST was ever wired to a router endpoint, so a
+    user who'd uploaded a document had no way to ever see it (or its
+    verification status) again through the API.
+    """
+    docs = await service.list_identity_documents(current_user.id)
+    return [IdentityDocumentOut.model_validate(doc) for doc in docs]

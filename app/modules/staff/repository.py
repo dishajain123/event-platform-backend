@@ -26,6 +26,26 @@ class StaffAssignmentRepository:
         )
         return list(result.scalars().all())
 
+    async def list_for_invitee_mobile(self, mobile_number: str) -> list[StaffAssignment]:
+        """
+        BUG FIX: found while building the mobile app's Pending Assignments
+        / My Events screens — there was no endpoint whatsoever for an
+        invitee to discover a staff invitation exists. create_assignment
+        sends no notification, and every listing endpoint on this router
+        is Event-Manager/console-gated. A person invited as staff had
+        literally no way to ever see or act on that invitation through
+        the app. invitee_mobile is confirmed as the correct, stable match
+        key for a caller's own assignments across their whole lifecycle
+        (accept_assignment itself checks `invitee_mobile != actor.mobile_
+        number` to authorize acceptance), so a single query against it
+        correctly covers both pending (invited) and already-accepted
+        (active) assignments for "my events" in one call.
+        """
+        result = await self.db.execute(
+            select(StaffAssignment).where(StaffAssignment.invitee_mobile == mobile_number)
+        )
+        return list(result.scalars().all())
+
     async def find_active_conflict(
         self, *, event_id: uuid.UUID, invitee_mobile: str, role_label: str, venue_id: uuid.UUID | None
     ) -> StaffAssignment | None:

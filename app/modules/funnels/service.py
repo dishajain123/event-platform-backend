@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.core.permissions import user_has_global_role, user_has_scoped_role
+from app.exceptions import PermissionDeniedError
 from app.modules.events.exceptions import EventNotFoundError
 from app.modules.events.repository import EventRepository
 from app.modules.funnels.exceptions import (
@@ -55,6 +56,23 @@ class FunnelService:
         return entry
 
     async def list_entries(self, stage_id: uuid.UUID) -> list[Entry]:
+        return await self.funnels.list_entries_for_stage(stage_id)
+
+    async def list_public_vote_entries(self, stage_id: uuid.UUID) -> list[Entry]:
+        """
+        BUG FIX: found while building the mobile app's public voting
+        screen — GET /entries is Event-Manager-only, meaning a plain
+        participant had no way whatsoever to discover which entries
+        exist to vote for, even during an active public_vote stage. This
+        is deliberately narrower than list_entries above: it only ever
+        returns entries for a stage whose stage_type is PUBLIC_VOTE,
+        raising if the stage is a jury/manual-review stage instead — a
+        participant should never be able to browse entries mid-judging
+        for a stage that was never meant to be public.
+        """
+        stage = await self._get_stage_or_raise(stage_id)
+        if stage.stage_type != StageType.PUBLIC_VOTE:
+            raise PermissionDeniedError("This stage is not open for public voting.")
         return await self.funnels.list_entries_for_stage(stage_id)
 
     async def _get_entry_or_raise(self, entry_id: uuid.UUID) -> Entry:

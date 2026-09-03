@@ -51,6 +51,21 @@ async def create_stage(
     return await service.create_stage(uuid.UUID(event_id), **payload.model_dump())
 
 
+@router.get("/entries/public", response_model=list[EntryOut])
+async def list_public_vote_entries(
+    stage_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    service: FunnelService = Depends(get_funnel_service),
+):
+    """
+    Called by: mobile's public voting screen (Section 8, Phase 6). Closes
+    a real gap — GET /entries is Event-Manager-only, so a participant had
+    no way whatsoever to discover which entries exist to vote for. Only
+    ever returns entries for a stage whose stage_type is PUBLIC_VOTE.
+    """
+    return await service.list_public_vote_entries(uuid.UUID(stage_id))
+
+
 @router.get("/entries", response_model=list[EntryOut])
 async def list_entries(
     stage_id: str = Query(...),

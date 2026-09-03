@@ -128,6 +128,50 @@ class TicketService:
     async def verify_qr_payload(self, payload: str, signature: str) -> bool:
         return hmac.compare_digest(self._sign_payload(payload), signature)
 
+    async def resolve_by_scan_payload(self, scan_payload: str, qr_signature: str) -> Ticket:
+        """
+        BUG FIX: found while building the mobile app's QR scanner —
+        POST /tickets/{ticket_id}/check-in requires the ticket's real
+        UUID in the URL, but a scanned QR's `qr_payload` only ever
+        contains "{ticket_code}:{registration_id}:{payment_id_or_free}"
+        (see _create_ticket) — never the ticket's UUID `id`. The offline
+        sync path (sync_offline_checkins, below) already had the full
+        resolution logic (verify signature, split out ticket_code, look
+        it up) inline, but the ONLINE path — described as Staff Mode's
+        single highest-frequency action — had no equivalent, meaning a
+        client scanning a QR code had no way to get the ticket_id
+        POST .../check-in requires. This extracts that existing logic
+        into its own reusable method so both paths share one
+        implementation, and exposes it as GET /tickets/resolve for the
+        online scanner to call immediately after every scan.
+        """
+        if not await self.verify_qr_payload(scan_payload, qr_signature):
+            raise InvalidTicketStateError("Invalid or tampered QR code.")
+        ticket_code = scan_payload.split(":", 1)[0]
+        ticket = await self.tickets.get_by_code(ticket_code)
+        if ticket is None:
+            raise TicketNotFoundError("Ticket not found.")
+        return ticket
+
+    async def resolve_by_ticket_code(self, ticket_code: str, actor: User) -> Ticket:
+        """
+        The manual-entry fallback for a damaged/unreadable QR (Section 8,
+        Phase 5) — deliberately does NOT require the qr_signature the
+        camera-scan path (resolve_by_scan_payload) does. A human can't
+        type a cryptographic signature from memory, so this instead
+        relies on: (1) the caller already being an authenticated,
+        can_access_ticket-checked Staff Mode account (enforced in the
+        router, same as every other ticket endpoint), and (2)
+        ticket_code itself already being a high-entropy random string
+        (`TKT-` + 16 hex chars), not something guessable. This is a
+        narrower trust model than the signed-payload path, used only for
+        the fallback case, never the primary scan flow.
+        """
+        ticket = await self.tickets.get_by_code(ticket_code)
+        if ticket is None:
+            raise TicketNotFoundError("Ticket not found.")
+        return ticket
+
     async def check_in(
         self,
         ticket_id: uuid.UUID,
@@ -175,12 +219,7 @@ class TicketService:
     async def sync_offline_checkins(self, actor: User, scans: list[OfflineCheckInIn]) -> list[CheckIn]:
         processed: list[CheckIn] = []
         for scan in scans:
-            if not await self.verify_qr_payload(scan.scan_payload, scan.qr_signature):
-                raise InvalidTicketStateError("Invalid offline scan payload.")
-            ticket_code = scan.scan_payload.split(":", 1)[0]
-            ticket = await self.tickets.get_by_code(ticket_code)
-            if ticket is None:
-                raise TicketNotFoundError("Ticket not found.")
+            ticket = await self.resolve_by_scan_payload(scan.scan_payload, scan.qr_signature)
             processed.append(
                 await self.check_in(
                     ticket.id,

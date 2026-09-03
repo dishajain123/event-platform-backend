@@ -70,7 +70,7 @@ async def test_registration_duplicate_guard_and_auto_approval(db_session):
         participants=[],
     )
 
-    assert reg.status.value == "approved"
+    assert reg.status.value == "confirmed"  # ticket issued immediately for this free, no-approval event
 
     with pytest.raises(DuplicateRegistrationError):
         await service.create_registration(
@@ -137,7 +137,7 @@ async def test_event_manager_can_approve_pending_registration(db_session):
     assert reg.status.value == "pending_verification"
 
     reg = await service.decide_registration(reg.id, approver, True)
-    assert reg.status.value == "approved"
+    assert reg.status.value == "confirmed"  # free event -> ticket issued immediately on approval
 
 
 @pytest.mark.asyncio

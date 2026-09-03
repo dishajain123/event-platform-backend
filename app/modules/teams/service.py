@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.core.permissions import user_has_scoped_role
+from app.exceptions import PermissionDeniedError
 from app.modules.config_engine.service import ConfigEngineService
 from app.modules.events.exceptions import EventNotFoundError
 from app.modules.events.repository import EventRepository
@@ -55,6 +56,54 @@ class TeamService:
         if team is None:
             raise TeamNotFoundError("Team not found.")
         return team
+
+    async def _can_view_team(self, actor: User, team: Team) -> bool:
+        """
+        BUG FIX: found while building the mobile app's Team Roster screen —
+        GET /teams was Event-Manager/console-only, meaning a team's own
+        CAPTAIN had no way whatsoever to check on their own team's
+        invitation-acceptance progress after creation (no way to re-fetch
+        it after an app restart, no way to see who's accepted). Only the
+        create/submit responses ever showed team state, and only at that
+        one moment.
+
+        This is the permission check behind the new
+        get_team_visible_to_actor()/list_members_visible_to_actor() methods
+        below, used by the new GET /teams/{team_id} and
+        GET /teams/{team_id}/members endpoints (router.py): the captain,
+        any accepted member, or anyone with a pending invitation to this
+        team, in addition to the pre-existing event-manager/console access.
+        """
+        if team.captain_user_id == actor.id:
+            return True
+
+        member_user_ids = await self.teams.list_member_user_ids(team.id)
+        if actor.id in member_user_ids:
+            return True
+
+        pending_invitations = await self.teams.list_pending_invitations_for_team(team.id)
+        if any(inv.invitee_mobile == actor.mobile_number for inv in pending_invitations):
+            return True
+
+        return await user_has_scoped_role(
+            self.db,
+            actor.id,
+            {RoleName.EVENT_MANAGER},
+            team.event_id,
+            allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
+        )
+
+    async def get_team_visible_to_actor(self, team_id: uuid.UUID, actor: User) -> Team:
+        team = await self.get_team_or_raise(team_id)
+        if not await self._can_view_team(actor, team):
+            raise PermissionDeniedError("You don't have permission to view this team.")
+        return team
+
+    async def list_members_visible_to_actor(self, team_id: uuid.UUID, actor: User):
+        team = await self.get_team_or_raise(team_id)
+        if not await self._can_view_team(actor, team):
+            raise PermissionDeniedError("You don't have permission to view this team.")
+        return await self.teams.list_members(team_id)
 
     async def create_team(self, event_id: uuid.UUID, actor: User, name: str, captain_date_of_birth=None) -> Team:
         await self._get_event_or_raise(event_id)

@@ -89,3 +89,60 @@ async def test_reviewer_fallback_finds_event_manager_granted_directly_via_rbac(d
         decision_reason="Approved directly",
     )
     assert decided.status == AssistanceRequestStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_requester_can_check_their_own_request_status(db_session):
+    """
+    Regression test for a real gap found while building the mobile app's
+    assistance-request status screen: list_requests is Event-Manager-only
+    — a participant who actually SUBMITTED a fee-waiver request had no
+    way whatsoever to check on it afterward.
+    """
+    from app.exceptions import PermissionDeniedError
+
+    creator = User(mobile_number="+919600000020")
+    requester = User(mobile_number="+919600000021")
+    manager = User(mobile_number="+919600000022")
+    outsider = User(mobile_number="+919600000023")
+    db_session.add_all([creator, requester, manager, outsider])
+    await db_session.flush()
+
+    start = datetime.now(timezone.utc) + timedelta(days=25)
+    event = await EventService(db_session).create_event(
+        created_by=creator.id, name="Requester Visibility Event", description="fixture",
+        category="sample", start_date=start, end_date=start + timedelta(days=1), organization_id=None,
+    )
+    await ConfigEngineService(db_session).upsert_configuration(
+        event.id, participation_types=["individual"], fee_amount=Decimal("500.00"), currency="INR",
+        capacity=10, approval_required=False, rules={}, discount_rules=None,
+    )
+    await _assign_role(db_session, manager, RoleName.EVENT_MANAGER, event.id)
+
+    registration = await RegistrationService(db_session).create_registration(
+        event_id=event.id, actor=requester, participation_type="individual",
+        date_of_birth=None, child_id=None, team_id=None,
+        documents_provided=[], answers={}, participants=[],
+    )
+
+    service = AssistanceService(db_session)
+    request = await service.create_request(
+        event_id=event.id, actor=requester, registration_id=registration.id,
+        reason="Need help with the fee", requested_fee_waiver_amount=Decimal("100.00"),
+    )
+
+    # The requester can now see their own request.
+    mine = await service.list_my_requests(requester)
+    assert len(mine) == 1
+    assert mine[0].id == request.id
+
+    # An outsider (not the requester) sees nothing.
+    assert await service.list_my_requests(outsider) == []
+
+    # The reviewing Event Manager's own view is unaffected by this fix.
+    for_event = await service.list_requests(event_id=event.id, actor=manager)
+    assert len(for_event) == 1
+
+    # A plain participant still cannot use the event-wide review view.
+    with pytest.raises(PermissionDeniedError):
+        await service.list_requests(event_id=event.id, actor=requester)

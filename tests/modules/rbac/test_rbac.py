@@ -92,6 +92,15 @@ async def test_assigning_a_global_role_with_an_event_id_is_rejected(db_session):
     db_session.add_all([user, admin])
     await db_session.flush()
 
+    # The assigner needs real permission to assign roles at all — this
+    # test is about the scope-validation rejection specifically, not
+    # about the assigner's own permission, so give them super_admin (the
+    # role with the broadest assign-permission) before exercising the
+    # actual behavior under test.
+    super_admin_role = (await db_session.execute(select(Role).where(Role.name == RoleName.SUPER_ADMIN))).scalar_one()
+    db_session.add(RoleAssignment(user_id=admin.id, role_id=super_admin_role.id, event_id=None))
+    await db_session.flush()
+
     service = RBACService(db_session)
     with pytest.raises(ScopeNotAllowedError):
         await service.assign_role(
@@ -109,6 +118,10 @@ async def test_assigning_a_scoped_role_without_an_event_id_is_rejected(db_sessio
     user = User(mobile_number="+916666666666")
     admin = User(mobile_number="+917777777777")
     db_session.add_all([user, admin])
+    await db_session.flush()
+
+    super_admin_role = (await db_session.execute(select(Role).where(Role.name == RoleName.SUPER_ADMIN))).scalar_one()
+    db_session.add(RoleAssignment(user_id=admin.id, role_id=super_admin_role.id, event_id=None))
     await db_session.flush()
 
     service = RBACService(db_session)
