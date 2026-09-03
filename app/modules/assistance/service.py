@@ -133,6 +133,14 @@ class AssistanceService:
             raise PermissionDeniedError("You don't have permission to view assistance requests for this event.")
         return await self.requests.list_for_event(event_id)
 
+    async def list_my_requests(self, actor: User) -> list[AssistanceRequest]:
+        """
+        Participant-facing assistance inbox. This closes the gap where a
+        requester could submit a fee-waiver request but had no way to
+        view its status again through the API.
+        """
+        return await self.requests.list_for_requester(actor.id)
+
     async def decide_request(
         self,
         request_id: uuid.UUID,

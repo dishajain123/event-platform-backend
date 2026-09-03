@@ -47,6 +47,15 @@ async def list_assistance_requests(
     return [AssistanceRequestOut.model_validate(request) for request in requests]
 
 
+@router.get("/mine", response_model=list[AssistanceRequestOut])
+async def list_my_assistance_requests(
+    current_user: User = Depends(get_current_user),
+    service: AssistanceService = Depends(get_assistance_service),
+):
+    requests = await service.list_my_requests(current_user)
+    return [AssistanceRequestOut.model_validate(request) for request in requests]
+
+
 @router.post("/{request_id}/decide", response_model=AssistanceRequestOut)
 async def decide_assistance_request(
     request_id: str,
