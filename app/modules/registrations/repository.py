@@ -8,7 +8,6 @@ from app.modules.registrations.models import (
     ACTIVE_REGISTRATION_STATUSES,
     Registration,
     RegistrationParticipant,
-    RegistrationStatus,
 )
 
 

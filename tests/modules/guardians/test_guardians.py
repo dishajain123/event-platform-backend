@@ -1,7 +1,7 @@
 """
 Phase 3 guardian coverage.
 """
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 
 import pytest
 

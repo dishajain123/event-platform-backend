@@ -1,7 +1,7 @@
 import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.modules.volunteers.models import VolunteerApplication, VolunteerApplicationStatus, VolunteerApplicationType
+from app.modules.volunteers.models import VolunteerApplication, VolunteerApplicationType
 
 
 class VolunteerRepository:

@@ -6,7 +6,7 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
-from app.core.permissions import user_has_global_role, user_has_scoped_role
+from app.core.permissions import user_has_scoped_role
 from app.exceptions import PermissionDeniedError
 from app.modules.assistance.exceptions import (
     AssistanceConflictError,
@@ -21,7 +21,6 @@ from app.modules.payments.models import DiscountType
 from app.modules.payments.repository import DiscountCodeRepository, PaymentRepository
 from app.modules.rbac.models import RoleName
 from app.modules.rbac.repository import RoleAssignmentRepository
-from app.modules.registrations.models import RegistrationStatus
 from app.modules.registrations.repository import RegistrationRepository
 from app.modules.staff.models import StaffAssignmentStatus
 from app.modules.staff.repository import StaffAssignmentRepository

@@ -4,7 +4,6 @@ import uuid
 from fastapi import APIRouter, Depends, Header, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import user_has_global_role
 from app.database import get_db
 from app.dependencies import get_current_user, require_role
 from app.modules.identity.models import User

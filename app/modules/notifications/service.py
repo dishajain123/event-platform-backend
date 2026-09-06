@@ -4,7 +4,6 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
@@ -29,7 +28,7 @@ from app.modules.notifications.models import (
 )
 from app.modules.notifications.repository import NotificationRepository, NotificationTemplateRepository
 from app.modules.rbac.models import RoleName
-from app.modules.registrations.models import ACTIVE_REGISTRATION_STATUSES, Registration
+from app.modules.registrations.models import ACTIVE_REGISTRATION_STATUSES
 from app.modules.registrations.repository import RegistrationRepository
 from app.config import get_settings
 

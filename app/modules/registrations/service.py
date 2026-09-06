@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.core.concurrency import acquire_event_capacity_lock
-from app.core.permissions import user_has_global_role, user_has_scoped_role
+from app.core.permissions import user_has_scoped_role
 from app.modules.config_engine.service import ConfigEngineService
 from app.modules.config_engine.registration_state import (
     RegistrationAvailability,

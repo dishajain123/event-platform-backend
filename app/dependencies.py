@@ -7,7 +7,6 @@ import uuid
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import user_has_global_role, user_has_scoped_role
@@ -17,7 +16,6 @@ from app.modules.identity.exceptions import InvalidTokenError
 from app.modules.identity.models import User
 from app.modules.identity.repository import UserRepository
 from app.modules.rbac.models import RoleName
-from app.redis_client import get_redis
 from app.security import TokenType, decode_token
 
 import jwt as _pyjwt

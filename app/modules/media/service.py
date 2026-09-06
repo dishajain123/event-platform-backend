@@ -12,12 +12,10 @@ from app.modules.events.exceptions import EventNotFoundError
 from app.modules.events.repository import EventRepository
 from app.modules.identity.models import User
 from app.modules.media.exceptions import (
-    HighlightNotFoundError,
-    InvalidMediaStateError,
     MediaConflictError,
     MediaNotFoundError,
 )
-from app.modules.media.models import Highlight, Media, MediaType
+from app.modules.media.models import Highlight, Media
 from app.modules.media.repository import HighlightRepository, MediaRepository
 from app.modules.media.schemas import HighlightCreateIn, MediaUploadIn
 from app.modules.rbac.models import RoleName

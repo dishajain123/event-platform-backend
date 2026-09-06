@@ -7,9 +7,6 @@ Because app/core/base_model.py uses SQLAlchemy's dialect-agnostic Uuid
 type, the exact same model code is exercised here as in production
 against Postgres.
 """
-import uuid
-
-import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 

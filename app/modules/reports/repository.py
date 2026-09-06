@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.modules.config_engine.models import EventConfiguration
-from app.modules.events.models import Event, EventStatus
+from app.modules.events.models import Event
 from app.modules.payments.models import Payment, PaymentStatus, Refund, RefundStatus
 from app.modules.registrations.models import ACTIVE_REGISTRATION_STATUSES, Registration
 from app.modules.tickets.models import CheckIn

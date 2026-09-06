@@ -2,12 +2,10 @@
 Generic advancement logic for a multi-stage competition funnel.
 """
 import uuid
-from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
-from app.core.permissions import user_has_global_role, user_has_scoped_role
 from app.exceptions import PermissionDeniedError
 from app.modules.events.exceptions import EventNotFoundError
 from app.modules.events.repository import EventRepository
@@ -19,7 +17,6 @@ from app.modules.funnels.exceptions import (
 from app.modules.funnels.models import CompetitionStage, Entry, EntryStatus, StageType
 from app.modules.funnels.repository import FunnelRepository
 from app.modules.identity.models import User
-from app.modules.rbac.models import RoleName
 
 
 class FunnelService:

@@ -9,7 +9,7 @@ from sqlalchemy import select
 from app.modules.events.service import EventService
 from app.modules.identity.models import User
 from app.modules.media.models import MediaType
-from app.modules.media.schemas import MediaPublishIn, MediaUploadIn
+from app.modules.media.schemas import MediaUploadIn
 from app.modules.media.service import MediaService
 from app.modules.rbac.models import Role, RoleAssignment, RoleName
 

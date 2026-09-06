@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.exceptions import PermissionDeniedError
 from app.core.permissions import user_has_global_role, user_has_scoped_role, user_scoped_event_ids
 from app.database import get_db
-from app.dependencies import get_current_user, require_role
+from app.dependencies import get_current_user
 from app.modules.identity.models import User
 from app.modules.rbac.models import RoleName
 from app.modules.registrations.schemas import (

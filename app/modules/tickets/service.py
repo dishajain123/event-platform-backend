@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.core.audit import write_audit_log
-from app.core.permissions import user_has_global_role, user_has_scoped_role
+from app.core.permissions import user_has_scoped_role
 from app.modules.identity.models import User
 from app.modules.payments.models import Payment, PaymentStatus
 from app.modules.registrations.models import RegistrationStatus

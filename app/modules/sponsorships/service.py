@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import user_has_global_role, user_has_scoped_role, user_scoped_event_ids
 from app.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
-from app.modules.events.models import EventStatus, Sponsor, SponsorStatus
+from app.modules.events.models import Sponsor, SponsorStatus
 from app.modules.identity.models import User
 from app.modules.rbac.models import RoleName
 from app.modules.sponsorships.models import (

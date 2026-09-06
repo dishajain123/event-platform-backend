@@ -17,11 +17,9 @@ import uuid
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import user_has_global_role
 from app.database import get_db
 from app.dependencies import get_current_user, require_role
 from app.modules.identity.models import User
-from app.modules.notifications.models import NotificationChannel
 from app.modules.notifications.schemas import NotificationOut, NotificationSendIn, NotificationTemplateOut
 from app.modules.notifications.service import NotificationService
 from app.modules.rbac.models import RoleName

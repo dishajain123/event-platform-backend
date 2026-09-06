@@ -22,7 +22,6 @@ from app.modules.config_engine.registration_state import (
     parse_registration_end_at,
 )
 from app.modules.events.repository import EventRepository
-from app.modules.registrations.models import ACTIVE_REGISTRATION_STATUSES
 from app.modules.registrations.repository import RegistrationRepository
 
 

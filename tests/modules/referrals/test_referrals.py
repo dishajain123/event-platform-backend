@@ -5,8 +5,6 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
-
 from app.modules.config_engine.service import ConfigEngineService
 from app.modules.events.service import EventService
 from app.modules.identity.models import User

@@ -15,7 +15,6 @@ from app.modules.payments.models import PaymentStatus
 from app.modules.payments.repository import PaymentRepository
 from app.modules.referrals.exceptions import (
     InvalidReferralStateError,
-    ReferralConflictError,
     ReferralNotFoundError,
     ReferralRewardNotFoundError,
 )
