@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.exceptions import PermissionDeniedError
 from app.core.permissions import user_has_global_role, user_has_scoped_role
 from app.database import get_db
-from app.dependencies import get_current_user, require_scoped_role
+from app.dependencies import get_current_user, get_current_user_optional, require_scoped_role
 from app.modules.funnels.schemas import CompetitionStageIn, CompetitionStageOut, EntryOut, StageDecisionIn
 from app.modules.funnels.service import FunnelService
 from app.modules.identity.models import User
@@ -23,7 +23,7 @@ def get_funnel_service(db: AsyncSession = Depends(get_db)) -> FunnelService:
 @router.get("/events/{event_id}/stages", response_model=list[CompetitionStageOut])
 async def list_stages(
     event_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
     service: FunnelService = Depends(get_funnel_service),
 ):
@@ -54,7 +54,7 @@ async def create_stage(
 @router.get("/entries/public", response_model=list[EntryOut])
 async def list_public_vote_entries(
     stage_id: str = Query(...),
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user_optional),
     service: FunnelService = Depends(get_funnel_service),
 ):
     """

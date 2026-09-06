@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType
@@ -25,6 +25,12 @@ class EventStatus(StrEnum):
     LIVE = "live"
     COMPLETED = "completed"
     ARCHIVED = "archived"
+
+
+class SponsorStatus(StrEnum):
+    CONFIRMED = "confirmed"
+    ACTIVE = "active"
+    INACTIVE = "inactive"
 
 
 # The valid state graph. Every transition not listed here is rejected —
@@ -108,10 +114,23 @@ class ScheduleItem(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 class Sponsor(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "sponsors"
+    __table_args__ = (UniqueConstraint("event_id", "inquiry_id", name="uq_sponsor_event_inquiry"),)
 
     event_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("events.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     tier: Mapped[str | None] = mapped_column(String(100), default=None)
     logo_url: Mapped[str | None] = mapped_column(String(500), default=None)
+    status: Mapped[SponsorStatus] = mapped_column(
+        Enum(SponsorStatus), default=SponsorStatus.CONFIRMED, nullable=False
+    )
+    category: Mapped[str | None] = mapped_column(String(100), default=None)
+    description: Mapped[str | None] = mapped_column(Text, default=None)
+    offer_details: Mapped[str | None] = mapped_column(Text, default=None)
+    benefits: Mapped[list | None] = mapped_column(JSON, default=list)
+    website_url: Mapped[str | None] = mapped_column(String(500), default=None)
+    contact_email: Mapped[str | None] = mapped_column(String(320), default=None)
+    inquiry_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType, ForeignKey("sponsorship_inquiries.id"), default=None, index=True
+    )
 
     event: Mapped["Event"] = relationship(back_populates="sponsors")

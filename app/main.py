@@ -33,6 +33,9 @@ from app.modules.teams.router import router as teams_router
 from app.modules.tickets.router import checkins_router, router as tickets_router
 from app.modules.reports.router import router as reports_router
 from app.modules.audit_log.router import router as audit_log_router
+from app.modules.feedback.router import router as feedback_router
+from app.modules.sponsorships.router import router as sponsorship_router
+from app.modules.volunteers.router import router as volunteer_router
 
 
 settings = get_settings()
@@ -164,6 +167,19 @@ app.include_router(
 
 app.include_router(
     audit_log_router,
+    prefix=settings.api_v1_prefix,
+)
+
+app.include_router(
+    feedback_router,
+    prefix=settings.api_v1_prefix,
+)
+app.include_router(
+    sponsorship_router,
+    prefix=settings.api_v1_prefix,
+)
+app.include_router(
+    volunteer_router,
     prefix=settings.api_v1_prefix,
 )
 

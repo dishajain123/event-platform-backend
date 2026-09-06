@@ -47,10 +47,24 @@ class RegistrationRepository:
         return list(result.scalars().all())
 
     async def list_for_event(self, event_id: uuid.UUID) -> list[Registration]:
+        return await self.list_for_events({event_id})
+
+    async def list_for_events(self, event_ids: set[uuid.UUID]) -> list[Registration]:
+        if not event_ids:
+            return []
         result = await self.db.execute(
             select(Registration)
             .options(selectinload(Registration.participants))
-            .where(Registration.event_id == event_id)
+            .where(Registration.event_id.in_(event_ids))
+            .order_by(Registration.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def list_all(self) -> list[Registration]:
+        result = await self.db.execute(
+            select(Registration)
+            .options(selectinload(Registration.participants))
+            .order_by(Registration.created_at.desc())
         )
         return list(result.scalars().all())
 

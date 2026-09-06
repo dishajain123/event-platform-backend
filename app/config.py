@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     payment_gateway_provider: str = "razorpay"
     payment_gateway_key_id: str = "rzp_test_key"
     payment_gateway_key_secret: str = "dev-secret"
+    payment_gateway_api_url: str = "https://api.razorpay.com"
+    payment_gateway_webhook_secret: str = "dev-webhook-secret"
     ticket_qr_secret: str = "change-this-ticket-secret"
 
     # ---- Auth / JWT ----

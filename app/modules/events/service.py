@@ -16,6 +16,12 @@ from app.modules.event_categories.exceptions import (
     SubCategoryNotFoundError,
 )
 from app.modules.event_categories.repository import MainCategoryRepository, SubCategoryRepository
+from app.modules.config_engine.registration_state import (
+    RegistrationAvailability,
+    calculate_registration_availability,
+    parse_registration_end_at,
+)
+from app.modules.config_engine.service import ConfigEngineService
 from app.modules.events.exceptions import EventNotFoundError, InvalidEventStatusTransitionError, SponsorNotFoundError
 from app.modules.events.models import ALLOWED_TRANSITIONS, Event, EventStatus
 from app.modules.events.repository import EventRepository, ScheduleRepository, SponsorRepository, VenueRepository
@@ -34,6 +40,7 @@ class EventService:
         self.main_categories = MainCategoryRepository(db)
         self.sub_categories = SubCategoryRepository(db)
         self.users = UserRepository(db)
+        self.configurations = ConfigEngineService(db)
 
     async def _resolve_category_fields(
         self,
@@ -123,7 +130,26 @@ class EventService:
         event = await self.events.get_by_id(event_id)
         if event is None:
             raise EventNotFoundError("Event not found.")
+        await self._synchronize_registration_state(event)
         return event
+
+    async def _synchronize_registration_state(self, event: Event) -> None:
+        config = event.configuration
+        if config is None:
+            return
+        registered_count = await self.configurations.registrations.count_active_for_event(event.id)
+        availability = calculate_registration_availability(
+            event_status=event.status,
+            capacity=config.capacity,
+            registered_count=registered_count,
+            registration_end_at=parse_registration_end_at(config.details),
+        )
+        if event.status == EventStatus.REGISTRATION_OPEN and availability in {
+            RegistrationAvailability.CLOSED,
+            RegistrationAvailability.FULL,
+        }:
+            event.status = EventStatus.REGISTRATION_CLOSED
+            await self.db.commit()
 
     async def get_event_visible_to_actor(self, event_id: uuid.UUID, actor: User | None) -> Event:
         event = await self.get_event_or_raise(event_id)
@@ -233,14 +259,30 @@ class EventService:
             require_sub_category=False,
         )
         if include_all_statuses:
-            return await self.events.list_all(
+            events = await self.events.list_all(
                 main_category_id=category_fields["main_category_id"],
                 sub_category_id=category_fields["sub_category_id"],
             )
-        return await self.events.list_public(
-            main_category_id=category_fields["main_category_id"],
-            sub_category_id=category_fields["sub_category_id"],
-        )
+        else:
+            events = await self.events.list_public(
+                main_category_id=category_fields["main_category_id"],
+                sub_category_id=category_fields["sub_category_id"],
+            )
+        for event in events:
+            await self._synchronize_registration_state(event)
+        return events
+
+    async def to_response(self, event: Event):
+        """Build an EventOut with live capacity/deadline metrics."""
+        from app.modules.events.schemas import EventOut
+
+        response = EventOut.model_validate(event)
+        if event.configuration is not None:
+            configuration = await self.configurations.configuration_response(
+                event.id, event.configuration
+            )
+            response = response.model_copy(update={"configuration": configuration})
+        return response
 
     # ---- Venues ----
 

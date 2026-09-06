@@ -53,7 +53,7 @@ async def resolve_ticket_by_scan(
     swallowed by the parameterized route.
     """
     ticket = await service.resolve_by_scan_payload(payload.scan_payload, payload.qr_signature)
-    if not await service.can_access_ticket(ticket, current_user):
+    if not await service.can_check_in_ticket(ticket, current_user):
         from app.exceptions import PermissionDeniedError
 
         raise PermissionDeniedError("You don't have permission to check in this ticket.")
@@ -73,7 +73,7 @@ async def resolve_ticket_by_code(
     parameterized route.
     """
     ticket = await service.resolve_by_ticket_code(ticket_code, current_user)
-    if not await service.can_access_ticket(ticket, current_user):
+    if not await service.can_check_in_ticket(ticket, current_user):
         from app.exceptions import PermissionDeniedError
 
         raise PermissionDeniedError("You don't have permission to check in this ticket.")

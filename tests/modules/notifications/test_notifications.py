@@ -144,3 +144,14 @@ async def test_recipient_can_mark_their_own_notification_read(db_session):
     # Someone else can't mark another person's notification read.
     with pytest.raises(PermissionDeniedError):
         await service.mark_read(notification.id, recipient_b)
+
+
+def test_notification_read_endpoint_is_registered():
+    from app.main import app
+
+    routes = {
+        (method, route.path)
+        for route in app.routes
+        for method in getattr(route, "methods", set())
+    }
+    assert ("POST", "/api/v1/notifications/{notification_id}/read") in routes

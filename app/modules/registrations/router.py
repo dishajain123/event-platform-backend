@@ -19,8 +19,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import PermissionDeniedError
-from app.core.permissions import user_has_global_role
-from app.core.permissions import user_has_scoped_role
+from app.core.permissions import user_has_global_role, user_has_scoped_role, user_scoped_event_ids
 from app.database import get_db
 from app.dependencies import get_current_user, require_role
 from app.modules.identity.models import User
@@ -83,6 +82,11 @@ async def list_registrations(
             return await service.list_registrations_for_event(event_id)
         return await service.list_all_registrations()
     if event_id is None:
+        managed_event_ids = await user_scoped_event_ids(
+            db, current_user.id, {RoleName.EVENT_MANAGER}
+        )
+        if managed_event_ids:
+            return await service.list_registrations_for_events(managed_event_ids)
         return await service.list_registrations_for_actor(current_user)
     is_event_manager = await user_has_scoped_role(
         db,

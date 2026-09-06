@@ -8,17 +8,30 @@ from sqlalchemy import select
 
 from app.modules.config_engine.service import ConfigEngineService
 from app.modules.events.service import EventService
+from app.modules.events.models import EventStatus
+from app.modules.notifications.models import Notification
 from app.modules.guardians.exceptions import GuardianAuthorizationError
 from app.modules.guardians.service import GuardianService
 from app.modules.identity.models import User
 from app.modules.registrations.router import list_registrations
 from app.modules.rbac.models import RoleAssignment, RoleName
-from app.modules.registrations.exceptions import DuplicateRegistrationError
+from app.modules.registrations.exceptions import (
+    DuplicateRegistrationError,
+    InvalidRegistrationStateError,
+    RegistrationCapacityExceededError,
+)
 from app.modules.registrations.service import RegistrationService
 
 
-async def _make_event(db_session, *, approval_required: bool = False):
-    creator = User(mobile_number="+919100000001")
+async def _make_event(
+    db_session,
+    *,
+    approval_required: bool = False,
+    creator_mobile: str = "+919100000001",
+    capacity: int | None = 10,
+    registration_end_at: datetime | None = None,
+):
+    creator = User(mobile_number=creator_mobile)
     db_session.add(creator)
     await db_session.flush()
 
@@ -37,12 +50,109 @@ async def _make_event(db_session, *, approval_required: bool = False):
         participation_types=["individual"],
         fee_amount=None,
         currency="INR",
-        capacity=10,
+        capacity=capacity,
         approval_required=approval_required,
+        registration_end_at=registration_end_at,
         rules={},
         discount_rules=None,
     )
     return event, creator
+
+
+@pytest.mark.asyncio
+async def test_capacity_closes_event_and_blocks_next_registration(db_session):
+    event, first_actor = await _make_event(db_session, capacity=1)
+    second_actor = User(mobile_number="+919100000099")
+    db_session.add(second_actor)
+    await db_session.flush()
+    service = RegistrationService(db_session)
+
+    await service.create_registration(
+        event_id=event.id,
+        actor=first_actor,
+        participation_type="individual",
+        date_of_birth=date(2012, 1, 1),
+        child_id=None,
+        team_id=None,
+        documents_provided=[],
+        answers={},
+        participants=[],
+    )
+
+    refreshed = await EventService(db_session).get_event_or_raise(event.id)
+    assert refreshed.status == EventStatus.REGISTRATION_CLOSED
+    with pytest.raises((RegistrationCapacityExceededError, InvalidRegistrationStateError)):
+        await service.create_registration(
+            event_id=event.id,
+            actor=second_actor,
+            participation_type="individual",
+            date_of_birth=date(2012, 1, 1),
+            child_id=None,
+            team_id=None,
+            documents_provided=[],
+            answers={},
+            participants=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_expired_registration_deadline_closes_open_event(db_session):
+    event, actor = await _make_event(
+        db_session,
+        registration_end_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    event.status = EventStatus.REGISTRATION_OPEN
+    await db_session.commit()
+
+    with pytest.raises(InvalidRegistrationStateError):
+        await RegistrationService(db_session).create_registration(
+            event_id=event.id,
+            actor=actor,
+            participation_type="individual",
+            date_of_birth=date(2012, 1, 1),
+            child_id=None,
+            team_id=None,
+            documents_provided=[],
+            answers={},
+            participants=[],
+        )
+
+    refreshed = await EventService(db_session).get_event_or_raise(event.id)
+    assert refreshed.status == EventStatus.REGISTRATION_CLOSED
+
+
+@pytest.mark.asyncio
+async def test_capacity_warning_is_queued_once_at_eighty_percent(db_session):
+    event, first_actor = await _make_event(db_session, capacity=5)
+    actors = [first_actor]
+    for index in range(3):
+        actor = User(mobile_number=f"+9191000010{index}")
+        db_session.add(actor)
+        actors.append(actor)
+    await db_session.flush()
+
+    service = RegistrationService(db_session)
+    for actor in actors:
+        await service.create_registration(
+            event_id=event.id,
+            actor=actor,
+            participation_type="individual",
+            date_of_birth=date(2012, 1, 1),
+            child_id=None,
+            team_id=None,
+            documents_provided=[],
+            answers={},
+            participants=[],
+        )
+
+    warnings = (
+        await db_session.execute(
+            select(Notification).where(Notification.event_id == event.id)
+        )
+    ).scalars().all()
+    assert len(warnings) == 4
+    assert all(notification.target_metadata["capacity_warning"] for notification in warnings)
+    assert all(notification.body == "Limited seats available — Register now!" for notification in warnings)
 
 
 async def _assign_role(db_session, user: User, role_name: RoleName, event_id=None):
@@ -167,3 +277,112 @@ async def test_registration_list_route_requires_event_scope_for_non_global_users
             db=db_session,
             service=service,
         )
+
+
+@pytest.mark.asyncio
+async def test_registration_list_scopes_managers_and_supports_operations_all_events(db_session):
+    event_a, _ = await _make_event(db_session)
+    event_b, _ = await _make_event(db_session, creator_mobile="+919100000012")
+    event_c, _ = await _make_event(db_session, creator_mobile="+919100000013")
+    manager = User(mobile_number="+919100000007")
+    operations = User(mobile_number="+919100000008")
+    participant = User(mobile_number="+919100000009")
+    db_session.add_all([manager, operations, participant])
+    await db_session.flush()
+    await _assign_role(db_session, manager, RoleName.EVENT_MANAGER, event_a.id)
+    await _assign_role(db_session, manager, RoleName.EVENT_MANAGER, event_b.id)
+    await _assign_role(db_session, operations, RoleName.OPERATIONS_ADMIN)
+
+    service = RegistrationService(db_session)
+    registrations = []
+    for event in (event_a, event_b, event_c):
+        registrations.append(
+            await service.create_registration(
+                event_id=event.id,
+                actor=participant,
+                participation_type="individual",
+                date_of_birth=date(2012, 1, 1),
+                child_id=None,
+                team_id=None,
+                documents_provided=[],
+                answers={},
+                participants=[],
+            )
+        )
+
+    assigned = await list_registrations(
+        event_id=None,
+        current_user=manager,
+        db=db_session,
+        service=service,
+    )
+    assert {registration.event_id for registration in assigned} == {event_a.id, event_b.id}
+
+    from app.exceptions import PermissionDeniedError
+
+    with pytest.raises(PermissionDeniedError):
+        await list_registrations(
+            event_id=event_c.id,
+            current_user=manager,
+            db=db_session,
+            service=service,
+        )
+
+    all_for_operations = await list_registrations(
+        event_id=None,
+        current_user=operations,
+        db=db_session,
+        service=service,
+    )
+    assert {registration.id for registration in all_for_operations} == {
+        registration.id for registration in registrations
+    }
+
+    only_event_c = await list_registrations(
+        event_id=event_c.id,
+        current_user=operations,
+        db=db_session,
+        service=service,
+    )
+    assert [registration.id for registration in only_event_c] == [registrations[2].id]
+
+
+@pytest.mark.asyncio
+async def test_registration_list_without_scope_remains_user_scoped_for_mobile_users(db_session):
+    event, _ = await _make_event(db_session)
+    owner = User(mobile_number="+919100000010")
+    other_owner = User(mobile_number="+919100000011")
+    db_session.add_all([owner, other_owner])
+    await db_session.flush()
+    service = RegistrationService(db_session)
+
+    own = await service.create_registration(
+        event_id=event.id,
+        actor=owner,
+        participation_type="individual",
+        date_of_birth=date(2012, 1, 1),
+        child_id=None,
+        team_id=None,
+        documents_provided=[],
+        answers={},
+        participants=[],
+    )
+    await service.create_registration(
+        event_id=event.id,
+        actor=other_owner,
+        participation_type="individual",
+        date_of_birth=date(2012, 1, 1),
+        child_id=None,
+        team_id=None,
+        documents_provided=[],
+        answers={},
+        participants=[],
+    )
+
+    visible = await list_registrations(
+        event_id=None,
+        current_user=owner,
+        db=db_session,
+        service=service,
+    )
+    assert [registration.id for registration in visible] == [own.id]

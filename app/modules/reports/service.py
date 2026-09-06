@@ -22,6 +22,10 @@ from app.modules.reports.schemas import (
     RegistrationStatusBreakdown,
 )
 from app.modules.events.models import EventStatus
+from app.modules.config_engine.registration_state import (
+    calculate_registration_availability,
+    parse_registration_end_at,
+)
 from app.modules.events.schemas import (
     EventDashboardItemOut,
     EventManagerOverviewOut,
@@ -104,7 +108,13 @@ class ReportService:
             event_total = sum(counts_by_status.values())
             active_count = await self.repo.get_active_registration_count(event.id)
             capacity = await self.repo.get_event_capacity(event.id)
-            is_full = capacity is not None and capacity > 0 and active_count >= capacity
+            availability = calculate_registration_availability(
+                event_status=event.status,
+                capacity=capacity,
+                registered_count=active_count,
+                registration_end_at=parse_registration_end_at(event.configuration.details if event.configuration else None),
+            )
+            is_full = availability.value == "full"
 
             total_registrations += event_total
             active_registrations += active_count
@@ -119,16 +129,16 @@ class ReportService:
                 active_events += 1
             if event.status == EventStatus.COMPLETED:
                 completed_events += 1
-            if event.status == EventStatus.REGISTRATION_OPEN:
+            if availability.value in {"open", "limited"}:
                 registration_open_events += 1
-            if event.status == EventStatus.REGISTRATION_CLOSED:
+            if availability.value == "closed":
                 registration_closed_events += 1
             if event.start_date > now and event.status not in {EventStatus.ARCHIVED, EventStatus.COMPLETED}:
                 upcoming_events += 1
             if is_full:
                 events_at_full_capacity += 1
 
-            registration_status = "full" if is_full else ("open" if event.status == EventStatus.REGISTRATION_OPEN else "closed")
+            registration_status = availability.value
 
             event_rows.append(
                 EventDashboardItemOut(

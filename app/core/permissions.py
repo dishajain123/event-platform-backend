@@ -68,3 +68,27 @@ async def user_has_scoped_role(
         ):
             return True
     return False
+
+
+async def user_scoped_event_ids(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    allowed_roles: set[RoleName],
+) -> set[uuid.UUID]:
+    """Return active event assignments for the requested scoped roles.
+
+    This is used by list endpoints whose event scope is optional. The
+    caller still applies the returned IDs in the database query, so a
+    client-provided event_id cannot widen the result set.
+    """
+    result = await db.execute(
+        select(RoleAssignment.event_id)
+        .join(Role, RoleAssignment.role_id == Role.id)
+        .where(
+            RoleAssignment.user_id == user_id,
+            RoleAssignment.status == AssignmentStatus.ACTIVE,
+            Role.name.in_(allowed_roles),
+            RoleAssignment.event_id.is_not(None),
+        )
+    )
+    return {event_id for (event_id,) in result.all() if event_id is not None}

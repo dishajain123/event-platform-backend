@@ -48,7 +48,7 @@ async def get_configuration(
     service: ConfigEngineService = Depends(get_config_engine_service),
 ):
     """Called by: both — mobile uses it to render the registration form."""
-    return await service.get_configuration(uuid.UUID(event_id))
+    return await service.configuration_response(uuid.UUID(event_id))
 
 
 @router.put("/configuration", response_model=EventConfigurationOut)
@@ -59,7 +59,8 @@ async def upsert_configuration(
     service: ConfigEngineService = Depends(get_config_engine_service),
 ):
     """Called by: console (Operations Admin, or scoped Event Manager for their own event)."""
-    return await service.upsert_configuration(uuid.UUID(event_id), **payload.model_dump())
+    await service.upsert_configuration(uuid.UUID(event_id), **payload.model_dump())
+    return await service.configuration_response(uuid.UUID(event_id))
 
 
 @router.get("/field-schema/{participation_type}", response_model=EventFieldSchemaOut | None)

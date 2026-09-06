@@ -12,6 +12,8 @@ from app.exceptions import PermissionDeniedError
 from app.modules.events.exceptions import InvalidEventStatusTransitionError
 from app.modules.events.models import EventStatus
 from app.modules.events.service import EventService
+from app.modules.config_engine.service import ConfigEngineService
+from app.modules.event_categories.service import EventCategoryService
 from app.modules.identity.models import User
 from app.modules.rbac.models import Role, RoleAssignment, RoleName
 
@@ -60,6 +62,73 @@ async def test_new_event_starts_in_draft(db_session):
     service = EventService(db_session)
     event, _ = await _make_event(db_session, service)
     assert event.status == EventStatus.DRAFT
+
+
+@pytest.mark.asyncio
+async def test_event_persists_and_returns_selected_category_hierarchy(db_session):
+    service = EventService(db_session)
+    creator = User(mobile_number="+919000000099")
+    db_session.add(creator)
+    await db_session.flush()
+    categories = EventCategoryService(db_session)
+    main = await categories.create_main_category(creator.id, name="Arts", description=None, is_active=True)
+    sub = await categories.create_sub_category(
+        creator.id,
+        main_category_id=main.id,
+        name="Painting",
+        description=None,
+        is_active=True,
+    )
+
+    start = datetime.now(timezone.utc) + timedelta(days=5)
+    event = await service.create_event(
+        created_by=creator.id,
+        name="Community Arts Event",
+        description=None,
+        category=None,
+        main_category_id=main.id,
+        sub_category_id=sub.id,
+        start_date=start,
+        end_date=start + timedelta(days=1),
+        organization_id=None,
+    )
+
+    reloaded = await service.get_event_or_raise(event.id)
+    assert reloaded.main_category_id == main.id
+    assert reloaded.sub_category_id == sub.id
+    assert reloaded.main_category.name == "Arts"
+    assert reloaded.sub_category.name == "Painting"
+    assert reloaded.category == "Painting"
+
+
+@pytest.mark.asyncio
+async def test_event_response_exposes_live_capacity_contract(db_session):
+    service = EventService(db_session)
+    event, creator = await _make_event(db_session, service, mobile_suffix="8")
+    deadline = datetime.now(timezone.utc) + timedelta(days=2)
+    await ConfigEngineService(db_session).upsert_configuration(
+        event.id,
+        participation_types=["individual"],
+        fee_amount=None,
+        currency="INR",
+        capacity=10,
+        registration_end_at=deadline,
+        approval_required=False,
+        rules={},
+        discount_rules=None,
+    )
+    event = await service.transition_status(event.id, EventStatus.CONFIGURED, creator.id)
+    event = await service.publish(event.id, creator.id)
+    event = await service.transition_status(event.id, EventStatus.REGISTRATION_OPEN, creator.id)
+
+    assert event.configuration is not None
+    response = await service.to_response(event)
+    assert response.configuration is not None
+    assert response.configuration.capacity == 10
+    assert response.configuration.registered_count == 0
+    assert response.configuration.available_capacity == 10
+    assert response.configuration.registration_status == "open"
+    assert response.configuration.registration_end_at == deadline
 
 
 @pytest.mark.asyncio

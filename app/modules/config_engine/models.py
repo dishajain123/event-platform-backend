@@ -35,6 +35,7 @@ class EventConfiguration(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     fee_amount: Mapped[float | None] = mapped_column(Numeric(10, 2), default=None)
     currency: Mapped[str] = mapped_column(String(3), default="INR")
     capacity: Mapped[int | None] = mapped_column(default=None)
+    volunteer_open: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     approval_required: Mapped[bool] = mapped_column(Boolean, default=False)
     details: Mapped[dict] = mapped_column(JSON, default=dict)
 

@@ -21,4 +21,17 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+    include=[
+        "app.workers.notification_tasks",
+        "app.workers.payment_tasks",
+        "app.workers.referral_tasks",
+        "app.workers.ticket_tasks",
+        "app.workers.registration_tasks",
+    ],
+    beat_schedule={
+        "registrations.synchronize_registration_states": {
+            "task": "registrations.synchronize_registration_states",
+            "schedule": 60.0,
+        },
+    },
 )

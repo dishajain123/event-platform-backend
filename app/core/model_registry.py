@@ -26,3 +26,6 @@ from app.modules.referrals import models as referrals_models  # noqa: F401
 from app.modules.assistance import models as assistance_models  # noqa: F401
 from app.modules.notifications import models as notifications_models  # noqa: F401
 from app.modules.media import models as media_models  # noqa: F401
+from app.modules.feedback import models as feedback_models  # noqa: F401
+from app.modules.sponsorships import models as sponsorship_models  # noqa: F401
+from app.modules.volunteers import models as volunteer_models  # noqa: F401

@@ -204,6 +204,7 @@ class TeamService:
         # duplicated here, it's inherited from that single code path.
         participants = [
             {
+                "user_id": member.user_id,
                 "full_name": member.full_name,
                 "date_of_birth": member.date_of_birth,
                 "is_captain": member.is_captain,

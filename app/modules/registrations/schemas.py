@@ -8,6 +8,7 @@ from app.modules.registrations.models import RegistrationStatus
 
 
 class RegistrationParticipantIn(BaseModel):
+    user_id: uuid.UUID | None = None
     full_name: str
     date_of_birth: date | None = None
     is_captain: bool = False

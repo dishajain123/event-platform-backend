@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import user_has_global_role
 from app.database import get_db
-from app.dependencies import get_current_user, require_role, require_scoped_role
+from app.dependencies import get_current_user, get_current_user_optional, require_role, require_scoped_role
 from app.modules.events.schemas import (
     EventCreateIn,
     EventOut,
@@ -38,7 +38,7 @@ def get_event_service(db: AsyncSession = Depends(get_db)) -> EventService:
 async def list_events(
     main_category_id: uuid.UUID | None = None,
     sub_category_id: uuid.UUID | None = None,
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
     service: EventService = Depends(get_event_service),
 ):
@@ -46,24 +46,26 @@ async def list_events(
     Called by: both. Mobile users see only PUBLISHED-or-later events;
     console users with Operations Admin/Super Admin see every status.
     """
-    is_console_admin = await user_has_global_role(
+    is_console_admin = current_user is not None and await user_has_global_role(
         db, current_user.id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN}
     )
-    return await service.list_events(
+    events = await service.list_events(
         include_all_statuses=is_console_admin,
         main_category_id=main_category_id,
         sub_category_id=sub_category_id,
     )
+    return [await service.to_response(event) for event in events]
 
 
 @router.get("/{event_id}", response_model=EventOut)
 async def get_event(
     event_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user_optional),
     service: EventService = Depends(get_event_service),
 ):
     """Called by: console event detail pages."""
-    return await service.get_event_visible_to_actor(event_id, current_user)
+    event = await service.get_event_visible_to_actor(event_id, current_user)
+    return await service.to_response(event)
 
 
 @router.post(
@@ -78,7 +80,8 @@ async def create_event(
     service: EventService = Depends(get_event_service),
 ):
     """Called by: console (Operations Admin)."""
-    return await service.create_event(created_by=current_user.id, **payload.model_dump())
+    event = await service.create_event(created_by=current_user.id, **payload.model_dump())
+    return await service.to_response(event)
 
 
 @router.patch("/{event_id}", response_model=EventOut)
@@ -95,9 +98,10 @@ async def update_event(
 ):
     """Called by: console — Operations Admin (any event) or a scoped Event
     Manager (their own event only, enforced by require_scoped_role)."""
-    return await service.update_event(
+    event = await service.update_event(
         uuid.UUID(event_id), current_user.id, **payload.model_dump(exclude_unset=True)
     )
+    return await service.to_response(event)
 
 
 @router.post(
@@ -112,7 +116,8 @@ async def publish_event(
 ):
     """Called by: console (Operations Admin only) — deliberately not delegated
     to Event Manager, publishing is a platform-level decision."""
-    return await service.publish(uuid.UUID(event_id), current_user.id)
+    event = await service.publish(uuid.UUID(event_id), current_user.id)
+    return await service.to_response(event)
 
 
 @router.post(
@@ -128,7 +133,8 @@ async def change_event_status(
 ):
     """Called by: console (Operations Admin). Any transition not allowed by
     ALLOWED_TRANSITIONS is rejected with a 422, not silently applied."""
-    return await service.transition_status(uuid.UUID(event_id), payload.new_status, current_user.id)
+    event = await service.transition_status(uuid.UUID(event_id), payload.new_status, current_user.id)
+    return await service.to_response(event)
 
 
 @router.post(
@@ -154,7 +160,7 @@ async def add_venue(
 @router.get("/{event_id}/venues", response_model=list[VenueOut])
 async def list_venues(
     event_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user_optional),
     service: EventService = Depends(get_event_service),
 ):
     """Called by: both."""
@@ -185,7 +191,7 @@ async def add_schedule_item(
 @router.get("/{event_id}/schedule", response_model=list[ScheduleItemOut])
 async def get_schedule(
     event_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user_optional),
     service: EventService = Depends(get_event_service),
 ):
     """Called by: both."""
@@ -196,7 +202,7 @@ async def get_schedule(
 @router.get("/{event_id}/sponsors", response_model=list[SponsorOut])
 async def list_sponsors(
     event_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user_optional),
     service: EventService = Depends(get_event_service),
 ):
     """Called by: console sponsor management screens."""
@@ -208,7 +214,10 @@ async def list_sponsors(
     "/{event_id}/sponsors",
     response_model=SponsorOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN))],
+    dependencies=[Depends(require_scoped_role(
+        RoleName.EVENT_MANAGER,
+        allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
+    ))],
 )
 async def add_sponsor(
     event_id: uuid.UUID,
@@ -222,7 +231,10 @@ async def add_sponsor(
 @router.delete(
     "/{event_id}/sponsors/{sponsor_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN))],
+    dependencies=[Depends(require_scoped_role(
+        RoleName.EVENT_MANAGER,
+        allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
+    ))],
 )
 async def delete_sponsor(
     event_id: uuid.UUID,

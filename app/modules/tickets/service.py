@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.core.audit import write_audit_log
@@ -125,6 +126,16 @@ class TicketService:
             allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
         )
 
+    async def can_check_in_ticket(self, ticket: Ticket, actor: User) -> bool:
+        """Gate operations are staff-only; ticket ownership grants viewing only."""
+        return await user_has_scoped_role(
+            self.db,
+            actor.id,
+            {RoleName.EVENT_MANAGER, RoleName.EVENT_COORDINATOR, RoleName.STAFF_LEAD, RoleName.STAFF_MEMBER},
+            ticket.event_id,
+            allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
+        )
+
     async def verify_qr_payload(self, payload: str, signature: str) -> bool:
         return hmac.compare_digest(self._sign_payload(payload), signature)
 
@@ -183,21 +194,34 @@ class TicketService:
         source: CheckInSource = CheckInSource.ONLINE,
     ) -> CheckIn:
         ticket = await self.get_ticket_or_raise(ticket_id)
-        if not await self.can_access_ticket(ticket, actor):
+        if not await self.can_check_in_ticket(ticket, actor):
             raise InvalidTicketStateError("You cannot check in this ticket.")
         existing = await self.checkins.get_by_ticket_id(ticket.id)
         if existing is not None:
             raise DuplicateCheckInError("This ticket has already been checked in.")
-        check_in = await self.checkins.create(
-            ticket_id=ticket.id,
-            event_id=ticket.event_id,
-            venue_id=venue_id,
-            scanned_by=actor.id,
-            source=source,
-            offline_batch_id=offline_batch_id,
-            scan_payload=scan_payload,
-            synced_at=datetime.now(timezone.utc) if source == CheckInSource.OFFLINE else None,
-        )
+        if ticket.status != TicketStatus.ISSUED:
+            raise InvalidTicketStateError("This ticket is not valid for check-in.")
+        if ticket.payment_id is not None:
+            payment = await self.db.get(Payment, ticket.payment_id)
+            if payment is None or payment.status != PaymentStatus.VERIFIED:
+                raise InvalidTicketStateError("Payment has not been verified for this ticket.")
+        registration = await self.registrations.get_by_id(ticket.registration_id)
+        if registration is None or registration.status != RegistrationStatus.CONFIRMED:
+            raise InvalidTicketStateError("Registration is not confirmed.")
+        try:
+            check_in = await self.checkins.create(
+                ticket_id=ticket.id,
+                event_id=ticket.event_id,
+                venue_id=venue_id,
+                scanned_by=actor.id,
+                source=source,
+                offline_batch_id=offline_batch_id,
+                scan_payload=scan_payload,
+                synced_at=datetime.now(timezone.utc) if source == CheckInSource.OFFLINE else None,
+            )
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise DuplicateCheckInError("This ticket has already been checked in.") from exc
         ticket.status = TicketStatus.CHECKED_IN
         ticket.checked_in_at = datetime.now(timezone.utc)
         ticket.checked_in_by = actor.id

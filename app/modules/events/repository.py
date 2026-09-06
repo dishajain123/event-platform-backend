@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.modules.events.models import Event, EventStatus, ScheduleItem, Sponsor, Venue
+from app.modules.events.models import Event, EventStatus, ScheduleItem, Sponsor, SponsorStatus, Venue
 
 
 class EventRepository:
@@ -27,6 +27,7 @@ class EventRepository:
                 selectinload(Event.configuration),
             )
             .where(Event.id == event_id)
+            .execution_options(populate_existing=True)
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
@@ -52,7 +53,9 @@ class EventRepository:
             selectinload(Event.organizer),
             selectinload(Event.configuration),
         )
-        stmt = stmt.where(Event.status.in_(visible_statuses))
+        stmt = stmt.where(Event.status.in_(visible_statuses)).execution_options(
+            populate_existing=True
+        )
         if main_category_id is not None:
             stmt = stmt.where(Event.main_category_id == main_category_id)
         if sub_category_id is not None:
@@ -73,6 +76,7 @@ class EventRepository:
             selectinload(Event.organizer),
             selectinload(Event.configuration),
         )
+        stmt = stmt.execution_options(populate_existing=True)
         if main_category_id is not None:
             stmt = stmt.where(Event.main_category_id == main_category_id)
         if sub_category_id is not None:
@@ -125,7 +129,12 @@ class SponsorRepository:
 
     async def list_for_event(self, event_id: uuid.UUID) -> list[Sponsor]:
         result = await self.db.execute(
-            select(Sponsor).where(Sponsor.event_id == event_id).order_by(Sponsor.created_at.desc())
+            select(Sponsor)
+            .where(
+                Sponsor.event_id == event_id,
+                Sponsor.status.in_([SponsorStatus.CONFIRMED, SponsorStatus.ACTIVE]),
+            )
+            .order_by(Sponsor.created_at.desc())
         )
         return list(result.scalars().all())
 

@@ -149,4 +149,7 @@ async def test_payment_webhook_issues_ticket_and_refund_flow(db_session):
 
     refreshed_payment = await payment_service.payments.get_by_id(payment.id)
     assert refreshed_payment is not None
-    assert refreshed_payment.status == PaymentStatus.REFUNDED
+    # A partial refund does not invalidate the payment or its already-used
+    # ticket. Full refunds transition the payment to REFUNDED and cancel an
+    # unused issued ticket.
+    assert refreshed_payment.status == PaymentStatus.VERIFIED

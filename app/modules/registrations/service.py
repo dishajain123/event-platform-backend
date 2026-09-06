@@ -1,6 +1,7 @@
 """
 Registration lifecycle and scope-aware access rules.
 """
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -10,6 +11,11 @@ from app.core.audit import write_audit_log
 from app.core.concurrency import acquire_event_capacity_lock
 from app.core.permissions import user_has_global_role, user_has_scoped_role
 from app.modules.config_engine.service import ConfigEngineService
+from app.modules.config_engine.registration_state import (
+    RegistrationAvailability,
+    calculate_registration_availability,
+    parse_registration_end_at,
+)
 from app.modules.events.exceptions import EventNotFoundError
 from app.modules.events.repository import EventRepository
 from app.modules.identity.models import User
@@ -21,9 +27,14 @@ from app.modules.registrations.exceptions import (
     RegistrationScopeError,
 )
 from app.modules.registrations.models import Registration, RegistrationStatus
+from app.modules.events.models import EventStatus
 from app.modules.registrations.repository import RegistrationRepository
 from app.modules.rbac.models import RoleName
 from app.modules.guardians.service import GuardianService
+from app.modules.teams.repository import TeamRepository
+
+
+logger = logging.getLogger(__name__)
 
 
 class RegistrationService:
@@ -45,6 +56,33 @@ class RegistrationService:
         if config is None:
             raise InvalidRegistrationStateError("Event configuration is missing.")
         return config
+
+    async def _ensure_registration_open(self, event, config) -> None:
+        active_count = await self.registrations.count_active_for_event(event.id)
+        registration_end_at = parse_registration_end_at(config.details)
+        now = datetime.now(timezone.utc)
+        if registration_end_at is not None and now >= registration_end_at:
+            if event.status == EventStatus.REGISTRATION_OPEN:
+                event.status = EventStatus.REGISTRATION_CLOSED
+                await self.db.commit()
+            raise InvalidRegistrationStateError("Registration is closed for this event.")
+        if event.status in {
+            EventStatus.REGISTRATION_CLOSED,
+            EventStatus.LIVE,
+            EventStatus.COMPLETED,
+            EventStatus.ARCHIVED,
+        }:
+            raise InvalidRegistrationStateError("Registration is closed for this event.")
+        availability = calculate_registration_availability(
+            event_status=event.status,
+            capacity=config.capacity,
+            registered_count=active_count,
+            registration_end_at=registration_end_at,
+        )
+        if availability == RegistrationAvailability.FULL:
+            event.status = EventStatus.REGISTRATION_CLOSED
+            await self.db.commit()
+            raise RegistrationCapacityExceededError("Registration capacity has been reached.")
 
     async def _ensure_capacity(self, event_id: uuid.UUID) -> None:
         """
@@ -101,6 +139,15 @@ class RegistrationService:
         if child_id is not None:
             await self.guardians.ensure_guardian_can_register_for_child(actor.id, child_id)
 
+        if participation_type == "team":
+            if team_id is None:
+                raise InvalidRegistrationStateError("A team registration must reference a team.")
+            team = await TeamRepository(self.db).get_by_id(team_id)
+            if team is None or team.event_id != event_id or team.captain_user_id != actor.id:
+                raise InvalidRegistrationStateError("You cannot register this team for the event.")
+        elif team_id is not None:
+            raise InvalidRegistrationStateError("Only team registrations may reference a team.")
+
         # BUG FIX: team_member_count must only ever be meaningful for
         # participation_type == "team" — it was previously defaulted to
         # len(participants) or 1 for EVERY participation type, which meant
@@ -124,6 +171,7 @@ class RegistrationService:
         # this method's transaction commits (or rolls back) below.
         await acquire_event_capacity_lock(self.db, event_id)
 
+        await self._ensure_registration_open(event, config)
         await self._ensure_no_duplicate(
             event_id=event_id,
             user_id=actor.id,
@@ -156,7 +204,7 @@ class RegistrationService:
         for participant in participants:
             await self.registrations.add_participant(
                 registration_id=registration.id,
-                user_id=actor.id if participant.get("is_captain") else None,
+                user_id=participant.get("user_id") or (actor.id if participant.get("is_captain") else None),
                 full_name=participant["full_name"],
                 date_of_birth=participant.get("date_of_birth"),
                 is_captain=participant.get("is_captain", False),
@@ -168,6 +216,30 @@ class RegistrationService:
             registration.status = RegistrationStatus.PENDING_PAYMENT
         else:
             registration.status = RegistrationStatus.APPROVED
+
+        capacity_warning_notifications = []
+        active_count = None
+        # Close the event in the same transaction when this registration
+        # consumes the final active seat.
+        if config.capacity is not None:
+            active_count = await self.registrations.count_active_for_event(event_id)
+            if active_count >= config.capacity:
+                event.status = EventStatus.REGISTRATION_CLOSED
+            elif active_count / config.capacity >= 0.8:
+                try:
+                    from app.modules.notifications.service import NotificationService
+
+                    capacity_warning_notifications = await NotificationService(
+                        self.db
+                    ).queue_capacity_warning(
+                        event_id=event_id,
+                        registered_count=active_count,
+                        capacity=config.capacity,
+                    )
+                except Exception:
+                    # Registration success must not depend on an external
+                    # notification provider or an inbox write.
+                    logger.exception("Unable to queue capacity warning for event %s", event_id)
 
         await write_audit_log(
             self.db,
@@ -191,6 +263,13 @@ class RegistrationService:
             await TicketService(self.db).issue_ticket_for_registration(registration)
 
         await self.db.commit()
+        for notification in capacity_warning_notifications:
+            try:
+                from app.modules.notifications.service import NotificationService
+
+                await NotificationService(self.db).deliver_notification(notification.id)
+            except Exception:
+                logger.exception("Unable to deliver capacity warning %s", notification.id)
         # Re-fetch via get_by_id (eager-loads participants) rather than
         # db.refresh(registration), which only reloads column attributes,
         # not relationships — see the fix note in repository.py's
@@ -208,6 +287,12 @@ class RegistrationService:
 
     async def list_registrations_for_event(self, event_id: uuid.UUID) -> list[Registration]:
         return await self.registrations.list_for_event(event_id)
+
+    async def list_registrations_for_events(self, event_ids: set[uuid.UUID]) -> list[Registration]:
+        return await self.registrations.list_for_events(event_ids)
+
+    async def list_all_registrations(self) -> list[Registration]:
+        return await self.registrations.list_all()
 
     async def can_manage_registration(self, actor: User, registration: Registration) -> bool:
         if registration.user_id == actor.id:

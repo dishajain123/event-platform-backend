@@ -1,7 +1,7 @@
 """Payment endpoints."""
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Header, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import user_has_global_role
@@ -13,6 +13,7 @@ from app.modules.payments.schemas import (
     PaymentInitiateIn,
     PaymentOut,
     PaymentWebhookIn,
+    PaymentVerifyIn,
     RefundApproveIn,
     RefundOut,
     RefundRequestIn,
@@ -55,6 +56,35 @@ async def payment_webhook(
 ):
     return await service.handle_webhook(
         payload.gateway_order_id, payload.gateway_payment_id, payload.gateway_signature
+    )
+
+
+@router.post("/verify", response_model=PaymentOut)
+async def verify_payment(
+    payload: PaymentVerifyIn,
+    current_user: User = Depends(get_current_user),
+    service: PaymentService = Depends(get_payment_service),
+):
+    """Verify a checkout callback; this is not a public webhook endpoint."""
+    return await service.verify_payment_for_actor(
+        payload.gateway_order_id,
+        payload.gateway_payment_id,
+        payload.gateway_signature,
+        current_user,
+    )
+
+
+@router.post("/razorpay/webhook", response_model=PaymentOut)
+async def razorpay_webhook(
+    request: Request,
+    x_razorpay_signature: str = Header(...),
+    service: PaymentService = Depends(get_payment_service),
+):
+    body = await request.body()
+    import json
+
+    return await service.handle_gateway_webhook(
+        body, x_razorpay_signature, json.loads(body.decode("utf-8"))
     )
 
 

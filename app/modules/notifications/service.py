@@ -29,7 +29,7 @@ from app.modules.notifications.models import (
 )
 from app.modules.notifications.repository import NotificationRepository, NotificationTemplateRepository
 from app.modules.rbac.models import RoleName
-from app.modules.registrations.models import Registration
+from app.modules.registrations.models import ACTIVE_REGISTRATION_STATUSES, Registration
 from app.modules.registrations.repository import RegistrationRepository
 from app.config import get_settings
 
@@ -170,6 +170,46 @@ class NotificationService:
         for notification in created:
             await self.db.refresh(notification)
 
+        return created
+
+    async def queue_capacity_warning(
+        self, *, event_id: uuid.UUID, registered_count: int, capacity: int
+    ) -> list[Notification]:
+        """Queue one push warning when an event reaches 80% capacity."""
+        existing = await self.notifications.list_for_event(event_id)
+        if any(
+            (notification.target_metadata or {}).get("capacity_warning")
+            for notification in existing
+        ):
+            return []
+
+        registrations = await self.registrations.list_for_event(event_id)
+        recipient_ids = list(
+            dict.fromkeys(
+                registration.user_id
+                for registration in registrations
+                if registration.status in ACTIVE_REGISTRATION_STATUSES
+            )
+        )
+        created: list[Notification] = []
+        for recipient_id in recipient_ids:
+            created.append(
+                await self.notifications.create(
+                    event_id=event_id,
+                    recipient_user_id=recipient_id,
+                    template_id=None,
+                    channel=NotificationChannel.PUSH,
+                    title="Limited seats available",
+                    body="Limited seats available — Register now!",
+                    target_metadata={
+                        "capacity_warning": True,
+                        "registration_status": "limited",
+                        "registered_count": registered_count,
+                        "capacity": capacity,
+                    },
+                    delivery_status=NotificationDeliveryStatus.QUEUED,
+                )
+            )
         return created
 
     async def deliver_notification(self, notification_id: uuid.UUID) -> Notification:

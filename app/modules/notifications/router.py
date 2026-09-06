@@ -42,6 +42,16 @@ async def list_my_notifications(
     return await service.list_my_notifications(current_user)
 
 
+@router.post("/{notification_id}/read", response_model=NotificationOut)
+async def mark_notification_read(
+    notification_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    service: NotificationService = Depends(get_notification_service),
+):
+    """Mark a notification as read, limited to its recipient by the service."""
+    return await service.mark_read(notification_id, current_user)
+
+
 @router.get("", response_model=list[NotificationOut])
 async def list_notifications_for_event(
     event_id: uuid.UUID,

@@ -27,6 +27,10 @@ class PaymentWebhookIn(BaseModel):
     gateway_signature: str
 
 
+class PaymentVerifyIn(PaymentWebhookIn):
+    """Client callback contract for an authenticated checkout completion."""
+
+
 class PaymentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

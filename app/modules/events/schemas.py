@@ -1,12 +1,12 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.event_categories.schemas import MainCategorySummary, SubCategorySummary
 from app.modules.config_engine.schemas import EventConfigurationOut
 from app.modules.identity.schemas import UserOut
-from app.modules.events.models import EventStatus
+from app.modules.events.models import EventStatus, SponsorStatus
 
 
 class EventCreateIn(BaseModel):
@@ -141,6 +141,12 @@ class SponsorIn(BaseModel):
     name: str
     tier: str | None = None
     logo_url: str | None = None
+    category: str | None = None
+    description: str | None = None
+    offer_details: str | None = None
+    benefits: list[str] = Field(default_factory=list)
+    website_url: str | None = None
+    contact_email: str | None = None
 
 
 class SponsorOut(BaseModel):
@@ -151,3 +157,11 @@ class SponsorOut(BaseModel):
     name: str
     tier: str | None
     logo_url: str | None
+    status: SponsorStatus
+    category: str | None
+    description: str | None
+    offer_details: str | None
+    benefits: list[str] | None
+    website_url: str | None
+    contact_email: str | None
+    inquiry_id: uuid.UUID | None
