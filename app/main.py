@@ -35,12 +35,18 @@ from app.modules.rbac.router import router as rbac_router
 from app.modules.staff.router import accept_router as staff_accept_router, router as staff_router
 from app.modules.referrals.router import router as referrals_router
 from app.modules.teams.router import router as teams_router
-from app.modules.tickets.router import checkins_router, router as tickets_router
+from app.modules.tickets.router import access_router as ticket_access_router, checkins_router, router as tickets_router
 from app.modules.reports.router import router as reports_router
 from app.modules.audit_log.router import router as audit_log_router
 from app.modules.feedback.router import router as feedback_router
 from app.modules.sponsorships.router import router as sponsorship_router
 from app.modules.volunteers.router import router as volunteer_router
+from app.modules.waitlists.router import router as waitlist_router
+from app.modules.incidents.router import router as incidents_router
+from app.modules.certificates.router import router as certificates_router, badges_router
+from app.modules.volunteer_shifts.router import router as volunteer_shifts_router
+from app.modules.interactions.router import router as interactions_router
+from app.modules.networking.router import router as networking_router
 
 
 settings = get_settings()
@@ -119,6 +125,10 @@ app.include_router(
     tickets_router,
     prefix=settings.api_v1_prefix,
 )
+app.include_router(
+    ticket_access_router,
+    prefix=settings.api_v1_prefix,
+)
 
 app.include_router(
     checkins_router,
@@ -187,6 +197,19 @@ app.include_router(
     volunteer_router,
     prefix=settings.api_v1_prefix,
 )
+app.include_router(
+    waitlist_router,
+    prefix=settings.api_v1_prefix,
+)
+app.include_router(
+    incidents_router,
+    prefix=settings.api_v1_prefix,
+)
+app.include_router(certificates_router, prefix=settings.api_v1_prefix)
+app.include_router(badges_router, prefix=settings.api_v1_prefix)
+app.include_router(volunteer_shifts_router, prefix=settings.api_v1_prefix)
+app.include_router(interactions_router, prefix=settings.api_v1_prefix)
+app.include_router(networking_router, prefix=settings.api_v1_prefix)
 
 
 @app.get("/health", tags=["meta"])

@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.modules.event_categories.schemas import MainCategorySummary, SubCategorySummary
 from app.modules.config_engine.schemas import EventConfigurationOut
 from app.modules.identity.schemas import UserOut
-from app.modules.events.models import EventStatus, SponsorStatus
+from app.modules.events.models import EventStatus, ScheduleStatus, SponsorStatus
 
 
 class EventCreateIn(BaseModel):
@@ -30,6 +30,43 @@ class EventUpdateIn(BaseModel):
     start_date: datetime | None = None
     end_date: datetime | None = None
     organizer_user_id: uuid.UUID | None = None
+
+
+class EventDuplicateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    start_date: datetime
+    end_date: datetime
+
+
+class EventTemplateCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    source_event_id: uuid.UUID
+
+
+class EventTemplateUpdateIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+
+
+class EventTemplateOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    owner_user_id: uuid.UUID
+    organization_id: uuid.UUID | None
+    source_event_id: uuid.UUID | None
+    name: str
+    description: str | None
+    is_archived: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class EventTemplatePage(BaseModel):
+    items: list[EventTemplateOut]
+    total: int
+    page: int
+    page_size: int
 
 
 class EventOut(BaseModel):
@@ -106,6 +143,9 @@ class VenueIn(BaseModel):
     address: str | None = None
     latitude: float | None = None
     longitude: float | None = None
+    capacity: int | None = Field(default=None, ge=1)
+    availability: list[dict] = Field(default_factory=list)
+    is_shared: bool = False
 
 
 class VenueOut(BaseModel):
@@ -117,6 +157,9 @@ class VenueOut(BaseModel):
     address: str | None
     latitude: float | None
     longitude: float | None
+    capacity: int | None
+    availability: list[dict]
+    is_shared: bool
 
 
 class ScheduleItemIn(BaseModel):
@@ -124,6 +167,8 @@ class ScheduleItemIn(BaseModel):
     title: str
     start_time: datetime
     end_time: datetime | None = None
+    resource_key: str | None = Field(default=None, max_length=120)
+    expected_capacity: int | None = Field(default=None, ge=1)
 
 
 class ScheduleItemOut(BaseModel):
@@ -135,6 +180,32 @@ class ScheduleItemOut(BaseModel):
     title: str
     start_time: datetime
     end_time: datetime | None
+    resource_key: str | None
+    expected_capacity: int | None
+    status: ScheduleStatus
+
+
+class ScheduleConflictOut(BaseModel):
+    reason_code: str
+    conflict_type: str
+    message: str
+    conflicting_event_id: uuid.UUID | None = None
+    conflicting_event_name: str | None = None
+    conflicting_schedule_id: uuid.UUID | None = None
+    conflicting_venue_id: uuid.UUID | None = None
+    existing_start_time: datetime | None = None
+    existing_end_time: datetime | None = None
+    requested_start_time: datetime
+    requested_end_time: datetime
+
+
+class ScheduleItemUpdateIn(BaseModel):
+    venue_id: uuid.UUID | None = None
+    title: str | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    resource_key: str | None = Field(default=None, max_length=120)
+    expected_capacity: int | None = Field(default=None, ge=1)
 
 
 class SponsorIn(BaseModel):

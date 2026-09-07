@@ -35,6 +35,7 @@ celery_app.conf.update(
         "app.workers.referral_tasks",
         "app.workers.ticket_tasks",
         "app.workers.registration_tasks",
+        "app.workers.waitlist_tasks",
     ],
     beat_schedule={
         "registrations.synchronize_registration_states": {
@@ -56,6 +57,10 @@ celery_app.conf.update(
         "payments.retry_failed_webhooks": {
             "task": "payments.retry_failed_webhooks",
             "schedule": 300.0,
+        },
+        "waitlists.expire_promotions": {
+            "task": "waitlists.expire_promotions",
+            "schedule": 60.0,
         },
     },
 )

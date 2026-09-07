@@ -477,10 +477,13 @@ class RegistrationService:
                 payment.status = PaymentStatus.FAILED
             registration.status = RegistrationStatus.CANCELLED
             registration.cancelled_at = now
-            ticket = await TicketRepository(self.db).get_by_registration_id(registration.id)
-            if ticket is not None and ticket.status == TicketStatus.ISSUED:
-                ticket.status = TicketStatus.CANCELLED
+            tickets = await TicketRepository(self.db).list_by_registration_id(registration.id)
+            for ticket in tickets:
+                if ticket.status not in {TicketStatus.CANCELLED, TicketStatus.REVOKED}:
+                    ticket.status = TicketStatus.CANCELLED
             await self._reopen_event_if_capacity_available(event, config)
+            from app.modules.waitlists.service import WaitlistService
+            await WaitlistService(self.db).promote_next(registration.event_id, registration.participation_type)
             action = "cancelled"
 
         await write_audit_log(

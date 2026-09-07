@@ -4,8 +4,15 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.core.pagination import Page
 from app.modules.events.models import SponsorStatus
-from app.modules.sponsorships.models import SponsorshipInquiryStatus
+from app.modules.sponsorships.models import (
+    SponsorConsentStatus,
+    SponsorEngagementType,
+    SponsorLeadStatus,
+    SponsorshipDeliverableStatus,
+    SponsorshipInquiryStatus,
+)
 
 
 class SponsorshipCategoryIn(BaseModel):
@@ -72,6 +79,7 @@ class SponsorshipAssignIn(BaseModel):
     benefits: list[str] = Field(default_factory=list)
     website_url: str | None = None
     contact_email: str | None = None
+    committed_value: Decimal | None = Field(default=None, ge=0)
 
 
 class SponsorshipInquiryEventOut(BaseModel):
@@ -115,3 +123,142 @@ class EventSponsorOut(BaseModel):
     website_url: str | None
     contact_email: str | None
     inquiry_id: uuid.UUID | None
+    committed_value: Decimal | None
+    paid_value: Decimal | None
+
+
+class SponsorStatusIn(BaseModel):
+    status: SponsorStatus
+
+
+class SponsorFinancialUpdateIn(BaseModel):
+    committed_value: Decimal | None = Field(default=None, ge=0)
+
+
+class SponsorshipDeliverableIn(BaseModel):
+    deliverable_type: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=1)
+    quantity: int | None = Field(default=None, ge=1)
+    due_date: datetime | None = None
+    evidence: dict | None = None
+
+
+class SponsorshipDeliverableUpdateIn(BaseModel):
+    deliverable_type: str | None = Field(default=None, min_length=1, max_length=80)
+    description: str | None = Field(default=None, min_length=1)
+    quantity: int | None = Field(default=None, ge=1)
+    due_date: datetime | None = None
+    status: SponsorshipDeliverableStatus | None = None
+    completion_notes: str | None = None
+    evidence: dict | None = None
+
+
+class SponsorshipDeliverableOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    sponsor_id: uuid.UUID
+    event_id: uuid.UUID
+    deliverable_type: str
+    description: str
+    quantity: int | None
+    due_date: datetime | None
+    status: SponsorshipDeliverableStatus
+    completed_at: datetime | None
+    completion_notes: str | None
+    evidence: dict | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SponsorshipDeliverablePage(BaseModel):
+    items: list[SponsorshipDeliverableOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class SponsorshipMetricsOut(BaseModel):
+    event_id: uuid.UUID
+    total_sponsors: int
+    confirmed_value: Decimal
+    paid_value: Decimal | None
+    active_sponsorships: int
+    completed_sponsorships: int
+    total_deliverables: int
+    completed_deliverables: int
+    pending_deliverables: int
+    overdue_deliverables: int
+    fulfillment_percentage: float | None
+    value_by_category: list[dict]
+
+
+class SponsorSummaryOut(BaseModel):
+    sponsor_id: uuid.UUID
+    event_id: uuid.UUID
+    sponsor_name: str
+    category: str | None
+    committed_value: Decimal | None
+    paid_value: Decimal | None
+    total_deliverables: int
+    completed_deliverables: int
+    pending_deliverables: int
+    overdue_deliverables: int
+    fulfillment_percentage: float | None
+
+
+class SponsorEngagementCreateIn(BaseModel):
+    sponsor_id: uuid.UUID
+    participant_id: uuid.UUID
+    engagement_type: SponsorEngagementType
+    consent_given: bool = False
+    consent_source: str | None = Field(default=None, max_length=80)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class SponsorLeadStatusIn(BaseModel):
+    status: SponsorLeadStatus
+
+
+class SponsorConsentIn(BaseModel):
+    consent_given: bool
+    consent_source: str | None = Field(default=None, max_length=80)
+
+
+class SponsorEngagementOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    sponsor_id: uuid.UUID
+    event_id: uuid.UUID
+    participant_id: uuid.UUID
+    captured_by: uuid.UUID
+    captured_at: datetime
+    engagement_type: SponsorEngagementType
+    note: str | None
+    consent_status: SponsorConsentStatus
+    consent_at: datetime | None
+    consent_source: str | None
+    lead_status: SponsorLeadStatus
+    participant_display_name: str | None = None
+    participant_organization: str | None = None
+    participant_designation: str | None = None
+
+
+class SponsorEngagementPage(Page[SponsorEngagementOut]):
+    pass
+
+
+class SponsorEngagementMetricsOut(BaseModel):
+    event_id: uuid.UUID
+    sponsor_id: uuid.UUID
+    total_leads: int
+    qualified_leads: int
+    contacted_leads: int
+    converted_leads: int
+    dismissed_leads: int
+    unsubscribed_leads: int
+    total_engagements: int
+    unique_participants_engaged: int
+    conversion_rate: float
+    qualification_rate: float
+    by_type: dict[str, int]
+    by_date: dict[str, int]

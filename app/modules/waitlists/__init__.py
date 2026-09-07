@@ -1,0 +1,1 @@
+"""Event-scoped waitlist lifecycle."""

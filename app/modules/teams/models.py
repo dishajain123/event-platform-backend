@@ -25,6 +25,19 @@ class TeamStatus(StrEnum):
     SUBMITTED = "submitted"
     APPROVED = "approved"
     REJECTED = "rejected"
+    ARCHIVED = "archived"
+
+
+class TeamMemberRole(StrEnum):
+    CAPTAIN = "captain"
+    MANAGER = "manager"
+    MEMBER = "member"
+
+
+class JoinRequestStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
 
 class InvitationStatus(StrEnum):
@@ -41,6 +54,13 @@ class Team(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         UUIDType, ForeignKey("users.id"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    team_code: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        unique=True,
+        default=lambda: f"TEAM-{uuid.uuid4().hex[:12].upper()}",
+    )
+    manager_user_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType, ForeignKey("users.id"), default=None)
     status: Mapped[TeamStatus] = mapped_column(Enum(TeamStatus), default=TeamStatus.DRAFT)
     captain_date_of_birth: Mapped[date | None] = mapped_column(Date(), default=None)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
@@ -76,6 +96,9 @@ class TeamMember(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     date_of_birth: Mapped[date | None] = mapped_column(Date(), default=None)
     is_captain: Mapped[bool] = mapped_column(default=False)
+    role: Mapped[TeamMemberRole] = mapped_column(
+        Enum(TeamMemberRole), default=TeamMemberRole.MEMBER, nullable=False
+    )
 
     team: Mapped["Team"] = relationship(back_populates="members")
 
@@ -93,3 +116,15 @@ class TeamInvitation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     team: Mapped["Team"] = relationship(back_populates="invitations")
+
+
+class TeamJoinRequest(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "team_join_requests"
+    __table_args__ = (UniqueConstraint("team_id", "user_id", name="uq_team_join_request_user"),)
+
+    team_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("teams.id"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("users.id"), nullable=False)
+    status: Mapped[JoinRequestStatus] = mapped_column(
+        Enum(JoinRequestStatus), default=JoinRequestStatus.PENDING, nullable=False
+    )
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)

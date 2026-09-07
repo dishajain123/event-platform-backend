@@ -3,6 +3,7 @@ Phase 4 ticket coverage.
 """
 import hashlib
 import hmac
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -17,7 +18,7 @@ from app.modules.rbac.models import Role, RoleAssignment, RoleName
 from app.modules.registrations.models import RegistrationStatus
 from app.modules.registrations.service import RegistrationService
 from app.modules.tickets.exceptions import DuplicateCheckInError, InvalidTicketStateError
-from app.modules.tickets.models import CheckInSource, TicketStatus
+from app.modules.tickets.models import AccessPolicy, CheckInSource, TicketStatus, TicketValidationReason
 from app.modules.tickets.schemas import OfflineCheckInIn
 from app.modules.tickets.service import TicketService
 
@@ -122,8 +123,39 @@ async def test_offline_checkin_sync_creates_checkin_and_blocks_duplicate_scan(db
     )
     assert refreshed_registration.status == RegistrationStatus.CHECKED_IN
 
+    replay = await ticket_service.sync_offline_checkins(context["staff"], [offline_scan])
+    assert replay[0].id == checkins[0].id
+
     with pytest.raises(DuplicateCheckInError):
         await ticket_service.check_in(refreshed_ticket.id, context["staff"], source=CheckInSource.ONLINE)
+
+
+@pytest.mark.asyncio
+async def test_offline_replay_requires_current_event_staff_authorization(db_session):
+    context = await _make_ticket_context(db_session)
+    ticket_service = TicketService(db_session)
+    ticket = context["ticket"]
+    offline_scan = OfflineCheckInIn(
+        offline_batch_id="authorization-replay-1",
+        scan_payload=ticket.barcode_payload,
+        barcode_signature=ticket.barcode_signature,
+    )
+
+    await ticket_service.sync_offline_checkins(context["staff"], [offline_scan])
+
+    assignment = (
+        await db_session.execute(
+            select(RoleAssignment).where(
+                RoleAssignment.user_id == context["staff"].id,
+                RoleAssignment.event_id == context["event"].id,
+            )
+        )
+    ).scalar_one()
+    await db_session.delete(assignment)
+    await db_session.commit()
+
+    with pytest.raises(InvalidTicketStateError, match="check in"):
+        await ticket_service.sync_offline_checkins(context["staff"], [offline_scan])
 
 
 @pytest.mark.asyncio
@@ -151,6 +183,64 @@ async def test_online_check_in_can_resolve_a_scanned_ticket_by_payload(db_sessio
     # A tampered/wrong signature is correctly rejected, not silently resolved.
     with pytest.raises(InvalidTicketStateError):
         await service.resolve_by_scan_payload(ticket.barcode_payload, "not-the-real-signature")
+
+
+@pytest.mark.asyncio
+async def test_structured_validation_covers_signature_scope_and_valid_ticket(db_session):
+    ctx = await _make_ticket_context(db_session)
+    service = TicketService(db_session)
+    ticket = ctx["ticket"]
+    valid = await service.validate_scan(ticket.barcode_payload, ticket.barcode_signature, ctx["staff"], event_id=ctx["event"].id)
+    assert valid.valid is True and valid.reason == TicketValidationReason.VALID
+    wrong_event = await service.validate_scan(ticket.barcode_payload, ticket.barcode_signature, ctx["staff"], event_id=uuid.uuid4())
+    assert wrong_event.valid is False and wrong_event.reason == TicketValidationReason.WRONG_EVENT
+    invalid = await service.validate_scan(ticket.barcode_payload, "forged", ctx["staff"])
+    assert invalid.valid is False and invalid.reason == TicketValidationReason.INVALID_SIGNATURE
+
+
+@pytest.mark.asyncio
+async def test_access_policy_reentry_and_revocation_are_enforced(db_session):
+    ctx = await _make_ticket_context(db_session)
+    policy = AccessPolicy(event_id=ctx["event"].id, access_type="general", allowed_zone_ids=[], allows_reentry=True, max_entries=2)
+    db_session.add(policy)
+    await db_session.flush()
+    ticket = ctx["ticket"]
+    ticket.access_policy_id = policy.id
+    await db_session.commit()
+    service = TicketService(db_session)
+    await service.check_in(ticket.id, ctx["staff"])
+    second = await service.validate_scan(ticket.barcode_payload, ticket.barcode_signature, ctx["staff"], event_id=ctx["event"].id)
+    assert second.valid is True
+    await service.check_in(ticket.id, ctx["staff"])
+    ticket.status = TicketStatus.REVOKED
+    await db_session.commit()
+    revoked = await service.validate_scan(ticket.barcode_payload, ticket.barcode_signature, ctx["staff"])
+    assert revoked.valid is False and revoked.reason == TicketValidationReason.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_access_policy_assignment_and_unused_ticket_replacement_are_audited(db_session):
+    ctx = await _make_ticket_context(db_session)
+    service = TicketService(db_session)
+    policy = AccessPolicy(event_id=ctx["event"].id, access_type="vip", allowed_zone_ids=[], allows_reentry=False, max_entries=1)
+    db_session.add(policy)
+    await db_session.flush()
+    await service.assign_access_type(ctx["ticket"].id, "vip", ctx["staff"])
+    replaced = await service.replace_ticket(ctx["ticket"].id, ctx["staff"])
+    assert replaced.access_type == "vip" and replaced.entry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_restricted_access_policy_fails_closed_without_zone(db_session):
+    ctx = await _make_ticket_context(db_session)
+    service = TicketService(db_session)
+    policy = AccessPolicy(event_id=ctx["event"].id, access_type="general", allowed_zone_ids=[str(uuid.uuid4())], allows_reentry=False, max_entries=1)
+    db_session.add(policy)
+    await db_session.flush()
+    ctx["ticket"].access_policy_id = policy.id
+    await db_session.commit()
+    result = await service.validate_scan(ctx["ticket"].barcode_payload, ctx["ticket"].barcode_signature, ctx["staff"])
+    assert result.valid is False and result.reason == TicketValidationReason.ACCESS_DENIED
 
 
 @pytest.mark.asyncio

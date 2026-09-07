@@ -8,9 +8,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select
 
-from app.exceptions import PermissionDeniedError
-from app.modules.events.exceptions import InvalidEventStatusTransitionError
-from app.modules.events.models import EventStatus
+from app.exceptions import NotFoundError, PermissionDeniedError, ValidationError
+from app.modules.events.exceptions import InvalidEventStatusTransitionError, ScheduleConflictError, VenueNotFoundError
+from app.modules.events.models import EventStatus, ScheduleStatus
+from app.modules.tickets.models import AccessPolicy, AccessZone
 from app.modules.events.service import EventService
 from app.modules.config_engine.service import ConfigEngineService
 from app.modules.event_categories.service import EventCategoryService
@@ -217,7 +218,6 @@ async def test_sponsor_crud(db_session):
     )
     assert sponsor.event_id == event.id
     assert sponsor.name == "Acme Corp"
-
     sponsors = await service.list_sponsors(event.id)
     assert len(sponsors) == 1
     assert sponsors[0].id == sponsor.id
@@ -225,3 +225,126 @@ async def test_sponsor_crud(db_session):
     await service.delete_sponsor(event.id, sponsor.id)
     sponsors_after_delete = await service.list_sponsors(event.id)
     assert sponsors_after_delete == []
+
+
+@pytest.mark.asyncio
+async def test_schedule_conflicts_and_lifecycle_are_server_enforced(db_session):
+    service = EventService(db_session)
+    event, creator = await _make_event(db_session, service, mobile_suffix="7")
+    venue = await service.add_venue(event.id, name="Main Hall", capacity=100)
+    start = event.start_date + timedelta(hours=1)
+    end = start + timedelta(hours=2)
+    first = await service.add_schedule_item(event.id, actor_user_id=creator.id, title="Opening", venue_id=venue.id, start_time=start, end_time=end, expected_capacity=50)
+
+    with pytest.raises(ScheduleConflictError) as conflict:
+        await service.add_schedule_item(event.id, actor_user_id=creator.id, title="Overlap", venue_id=venue.id, start_time=start + timedelta(minutes=30), end_time=end + timedelta(minutes=30))
+    assert conflict.value.details["reason_code"] == "VENUE_OVERLAP"
+
+    moved = await service.update_schedule_item(event.id, first.id, actor_user_id=creator.id, start_time=end + timedelta(minutes=1), end_time=end + timedelta(hours=1))
+    assert moved.start_time == end + timedelta(minutes=1)
+    cancelled = await service.cancel_schedule_item(event.id, first.id, actor_user_id=creator.id)
+    assert cancelled.status == ScheduleStatus.CANCELLED
+    await service.delete_schedule_item(event.id, first.id, actor_user_id=creator.id)
+
+
+@pytest.mark.asyncio
+async def test_schedule_resource_availability_capacity_and_time_validation(db_session):
+    service = EventService(db_session)
+    event, creator = await _make_event(db_session, service, mobile_suffix="6")
+    start = event.start_date + timedelta(hours=2)
+    venue = await service.add_venue(event.id, name="Hall", capacity=20, availability=[{"start_time": (start + timedelta(hours=1)).isoformat(), "end_time": (start + timedelta(hours=3)).isoformat()}])
+    with pytest.raises(ScheduleConflictError) as unavailable:
+        await service.add_schedule_item(event.id, actor_user_id=creator.id, title="Too early", venue_id=venue.id, start_time=start, end_time=start + timedelta(minutes=30))
+    assert unavailable.value.details["reason_code"] == "VENUE_UNAVAILABLE"
+    with pytest.raises(ScheduleConflictError) as capacity:
+        await service.add_schedule_item(event.id, actor_user_id=creator.id, title="Too large", venue_id=venue.id, start_time=start + timedelta(hours=1), end_time=start + timedelta(hours=2), expected_capacity=21)
+    assert capacity.value.details["reason_code"] == "CAPACITY_EXCEEDED"
+    with pytest.raises(ScheduleConflictError) as invalid:
+        await service.add_schedule_item(event.id, actor_user_id=creator.id, title="Invalid", venue_id=venue.id, start_time=start, end_time=start)
+    assert invalid.value.details["reason_code"] == "INVALID_TIME_RANGE"
+
+    resource_start = start + timedelta(hours=1)
+    await service.add_schedule_item(event.id, actor_user_id=creator.id, title="Resource A", resource_key="stage-a", start_time=resource_start, end_time=resource_start + timedelta(minutes=30))
+    with pytest.raises(ScheduleConflictError) as resource:
+        await service.add_schedule_item(event.id, actor_user_id=creator.id, title="Resource B", resource_key="stage-a", start_time=resource_start + timedelta(minutes=10), end_time=resource_start + timedelta(minutes=40))
+    assert resource.value.details["reason_code"] == "RESOURCE_OVERLAP"
+
+
+@pytest.mark.asyncio
+async def test_template_duplication_copies_configuration_not_runtime_data(db_session):
+    service, source, _creator, manager, outsider = await _make_event_with_users(db_session)
+    await ConfigEngineService(db_session).upsert_configuration(
+        source.id,
+        participation_types=["individual", "team"],
+        fee_amount=250,
+        currency="INR",
+        capacity=40,
+        registration_end_at=source.start_date - timedelta(days=2),
+        approval_required=True,
+        rules={"min_age": 18},
+        discount_rules={"codes": {"EARLY": {"type": "percentage", "value": 10}}},
+    )
+    await ConfigEngineService(db_session).upsert_field_schema(source.id, "individual", [{"key": "shirt", "label": "Shirt", "type": "select", "required": True, "options": ["S", "M"]}])
+    venue = await service.add_venue(source.id, name="Source Hall", capacity=100)
+    await service.add_schedule_item(source.id, actor_user_id=manager.id, title="Opening", venue_id=venue.id, resource_key="stage-a", start_time=source.start_date + timedelta(hours=1), end_time=source.start_date + timedelta(hours=2))
+    zone = AccessZone(event_id=source.id, code="MAIN", name="Main Gate")
+    db_session.add(zone)
+    await db_session.flush()
+    db_session.add(AccessPolicy(event_id=source.id, access_type="general", allowed_zone_ids=[str(zone.id)], allows_reentry=True, max_entries=2))
+    await db_session.commit()
+
+    template = await service.create_template(manager, name="Sports Template", description="Reusable setup", source_event_id=source.id)
+    listed, total = await service.list_templates(manager, page=1, page_size=25)
+    assert total == 1
+    assert listed[0].id == template.id
+    duplicate = await service.duplicate_event(manager, source.id, name="Copied Sports Day", start_date=source.start_date + timedelta(days=30), end_date=source.end_date + timedelta(days=30))
+
+    assert duplicate.id != source.id
+    assert duplicate.status == EventStatus.DRAFT
+    assert duplicate.configuration.capacity == 40
+    assert duplicate.configuration.participation_types == ["individual", "team"]
+    copied_venues = await service.list_venues(duplicate.id)
+    copied_schedule = await service.list_schedule(duplicate.id)
+    assert len(copied_venues) == 1
+    assert copied_venues[0].id != venue.id
+    assert len(copied_schedule) == 1
+    assert copied_schedule[0].event_id == duplicate.id
+    assert copied_schedule[0].start_time == source.start_date + timedelta(days=30, hours=1)
+    copied_zone = (await db_session.execute(select(AccessZone).where(AccessZone.event_id == duplicate.id))).scalar_one()
+    copied_policy = (await db_session.execute(select(AccessPolicy).where(AccessPolicy.event_id == duplicate.id))).scalar_one()
+    assert copied_zone.id != zone.id
+    assert copied_policy.allowed_zone_ids == [str(copied_zone.id)]
+
+    duplicate.name = "Changed Copy"
+    await db_session.commit()
+    source_again = await service.get_event_or_raise(source.id)
+    assert source_again.name == "Sample Community Sports Day"
+    assert (await service.list_schedule(source.id))[0].title == "Opening"
+    with pytest.raises(PermissionDeniedError):
+        await service.duplicate_event(outsider, source.id, name="Nope", start_date=source.start_date + timedelta(days=60), end_date=source.end_date + timedelta(days=60))
+
+
+@pytest.mark.asyncio
+async def test_template_lifecycle_and_rollback_on_invalid_dates(db_session):
+    service, source, _creator, manager, _outsider = await _make_event_with_users(db_session)
+    template = await service.create_template(manager, name="Template", description=None, source_event_id=source.id)
+    with pytest.raises(ValidationError):
+        await service.create_event_from_template(manager, template.id, name="Invalid", start_date=source.start_date, end_date=source.start_date)
+    assert (await service.list_events(include_all_statuses=True))
+    updated = await service.update_template(manager, template.id, name="Updated Template")
+    assert updated.name == "Updated Template"
+    archived = await service.archive_template(manager, template.id)
+    assert archived.is_archived is True
+    await service.delete_template(manager, template.id)
+    with pytest.raises(NotFoundError):
+        await service._get_visible_template(manager, template.id)
+
+
+@pytest.mark.asyncio
+async def test_schedule_cannot_use_another_event_private_venue(db_session):
+    service = EventService(db_session)
+    event_a, creator = await _make_event(db_session, service, mobile_suffix="4")
+    event_b, _ = await _make_event(db_session, service, mobile_suffix="5")
+    venue = await service.add_venue(event_a.id, name="Private Hall")
+    with pytest.raises(VenueNotFoundError):
+        await service.add_schedule_item(event_b.id, actor_user_id=creator.id, title="Cross event", venue_id=venue.id, start_time=event_b.start_date + timedelta(hours=1), end_time=event_b.start_date + timedelta(hours=2))

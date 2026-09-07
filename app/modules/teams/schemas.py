@@ -4,7 +4,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.modules.teams.models import InvitationStatus, TeamStatus
+from app.modules.teams.models import InvitationStatus, TeamMemberRole, TeamStatus, JoinRequestStatus
 
 
 class TeamCreateIn(BaseModel):
@@ -19,6 +19,9 @@ class TeamOut(BaseModel):
     event_id: uuid.UUID
     captain_user_id: uuid.UUID
     name: str
+    team_code: str
+    manager_user_id: uuid.UUID | None
+    registration_id: uuid.UUID | None
     status: TeamStatus
     captain_date_of_birth: date | None
     submitted_at: datetime | None
@@ -55,3 +58,21 @@ class TeamMemberOut(BaseModel):
     full_name: str
     date_of_birth: date | None
     is_captain: bool
+    role: TeamMemberRole
+
+
+class TeamMemberRoleIn(BaseModel):
+    role: TeamMemberRole
+
+
+class TeamManagerIn(BaseModel):
+    user_id: uuid.UUID | None = None
+
+
+class TeamJoinRequestOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    team_id: uuid.UUID
+    user_id: uuid.UUID
+    status: JoinRequestStatus
+    responded_at: datetime | None

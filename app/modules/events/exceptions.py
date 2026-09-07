@@ -1,4 +1,4 @@
-from app.exceptions import NotFoundError, ValidationError
+from app.exceptions import ConflictError, NotFoundError, ValidationError
 
 
 class EventNotFoundError(NotFoundError):
@@ -15,3 +15,7 @@ class VenueNotFoundError(NotFoundError):
 
 class SponsorNotFoundError(NotFoundError):
     error_code = "sponsor_not_found"
+
+
+class ScheduleConflictError(ConflictError):
+    error_code = "schedule_conflict"

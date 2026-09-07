@@ -17,6 +17,11 @@ class NotificationRepository:
         self.db = db
 
     async def create(self, **kwargs) -> Notification:
+        dedupe_key = kwargs.get("dedupe_key")
+        if dedupe_key:
+            existing = await self.get_by_dedupe_key(dedupe_key)
+            if existing is not None:
+                return existing
         notification = Notification(**kwargs)
         self.db.add(notification)
         await self.db.flush()

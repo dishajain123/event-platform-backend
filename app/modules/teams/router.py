@@ -14,8 +14,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import PermissionDeniedError
-from app.core.permissions import user_has_global_role
-from app.core.permissions import user_has_scoped_role
+from app.core.permissions import user_has_global_role, user_has_scoped_role, user_scoped_event_ids
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.modules.identity.models import User
@@ -24,8 +23,11 @@ from app.modules.teams.schemas import (
     TeamCreateIn,
     TeamInvitationIn,
     TeamInvitationOut,
+    TeamManagerIn,
     TeamInvitationResponseIn,
     TeamMemberOut,
+    TeamMemberRoleIn,
+    TeamJoinRequestOut,
     TeamOut,
 )
 from app.modules.teams.service import TeamService
@@ -100,7 +102,16 @@ async def list_teams(
     if not isinstance(page_size, int):
         page_size = 25
     if event_id is None:
-        return []
+        if await user_has_global_role(db, current_user.id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN}):
+            if page is None:
+                return await service.list_teams_for_events(None)
+            items, total = await service.page_teams_for_events(None, page=page, page_size=page_size)
+            return Page(items=items, total=total, page=page, page_size=page_size)
+        assigned_ids = await user_scoped_event_ids(db, current_user.id, {RoleName.EVENT_MANAGER})
+        if page is None:
+            return await service.list_teams_for_events(assigned_ids)
+        items, total = await service.page_teams_for_events(assigned_ids, page=page, page_size=page_size)
+        return Page(items=items, total=total, page=page, page_size=page_size)
     is_global_console = await user_has_global_role(
         db, current_user.id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN}
     )
@@ -117,6 +128,16 @@ async def list_teams(
         return await service.list_teams(event_id)
     items, total = await service.page_teams(event_id, page=page, page_size=page_size)
     return Page(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get("/mine", response_model=list[TeamOut])
+async def list_my_teams(current_user: User = Depends(get_current_user), service: TeamService = Depends(get_team_service)):
+    return await service.list_my_teams(current_user)
+
+
+@router.get("/invitations/mine", response_model=list[TeamInvitationOut])
+async def list_my_invitations(current_user: User = Depends(get_current_user), service: TeamService = Depends(get_team_service)):
+    return await service.list_my_invitations(current_user)
 
 
 @router.get("/{team_id}", response_model=TeamOut)
@@ -155,3 +176,38 @@ async def approve_team(
     """Called by: console / scoped mobile Staff Mode (Event Manager). See
     module docstring above for why this isn't a require_scoped_role dependency."""
     return await service.approve_team(uuid.UUID(team_id), current_user)
+
+
+@router.post("/{team_id}/join-requests", response_model=TeamJoinRequestOut, status_code=status.HTTP_201_CREATED)
+async def request_to_join_team(team_id: str, current_user: User = Depends(get_current_user), service: TeamService = Depends(get_team_service)):
+    return await service.request_to_join(uuid.UUID(team_id), current_user)
+
+
+@router.get("/{team_id}/join-requests", response_model=list[TeamJoinRequestOut])
+async def list_join_requests(team_id: str, current_user: User = Depends(get_current_user), service: TeamService = Depends(get_team_service)):
+    return await service.list_join_requests_visible_to_actor(uuid.UUID(team_id), current_user)
+
+
+@router.post("/{team_id}/join-requests/{request_id}/respond", response_model=TeamJoinRequestOut)
+async def respond_to_join_request(team_id: str, request_id: str, payload: TeamInvitationResponseIn, current_user: User = Depends(get_current_user), service: TeamService = Depends(get_team_service)):
+    return await service.respond_to_join_request(uuid.UUID(team_id), uuid.UUID(request_id), current_user, payload.accept)
+
+
+@router.post("/{team_id}/members/{member_id}/remove", response_model=TeamMemberOut)
+async def remove_team_member(team_id: str, member_id: str, current_user: User = Depends(get_current_user), service: TeamService = Depends(get_team_service)):
+    return await service.remove_member(uuid.UUID(team_id), uuid.UUID(member_id), current_user)
+
+
+@router.post("/{team_id}/members/{member_id}/role", response_model=TeamMemberOut)
+async def set_team_member_role(team_id: str, member_id: str, payload: TeamMemberRoleIn, current_user: User = Depends(get_current_user), service: TeamService = Depends(get_team_service)):
+    return await service.set_member_role(uuid.UUID(team_id), uuid.UUID(member_id), payload.role, current_user)
+
+
+@router.post("/{team_id}/leave")
+async def leave_team(team_id: str, current_user: User = Depends(get_current_user), service: TeamService = Depends(get_team_service)):
+    return await service.leave_team(uuid.UUID(team_id), current_user)
+
+
+@router.post("/{team_id}/manager", response_model=TeamOut)
+async def assign_team_manager(team_id: str, payload: TeamManagerIn, current_user: User = Depends(get_current_user), service: TeamService = Depends(get_team_service)):
+    return await service.assign_manager(uuid.UUID(team_id), payload.user_id, current_user)

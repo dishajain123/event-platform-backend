@@ -30,8 +30,9 @@ def register_middleware(app: FastAPI) -> None:
         CORSMiddleware,
         allow_origins=allowed_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID"],
+        expose_headers=["X-Request-ID"],
     )
 
     @app.middleware("http")
@@ -45,4 +46,10 @@ def register_middleware(app: FastAPI) -> None:
             request_id, request.method, request.url.path, response.status_code, duration_ms,
         )
         response.headers["X-Request-ID"] = request_id
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(self), microphone=(), geolocation=()"
+        if settings.environment.lower() in {"production", "prod"}:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response

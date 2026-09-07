@@ -7,7 +7,7 @@ anywhere else in the codebase.
 """
 from functools import lru_cache
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -89,6 +89,23 @@ class Settings(BaseSettings):
     notification_provider_timeout_seconds: float = 10.0
     notification_max_attempts: int = 3
     notification_timezone: str = "UTC"
+
+    @model_validator(mode="after")
+    def validate_production_configuration(self):
+        if self.environment.lower() not in {"production", "prod"}:
+            return self
+        placeholders = {
+            "PAYMENT_GATEWAY_KEY_ID": self.payment_gateway_key_id in {"", "rzp_test_key"},
+            "PAYMENT_GATEWAY_KEY_SECRET": self.payment_gateway_key_secret in {"", "dev-secret"},
+            "PAYMENT_GATEWAY_WEBHOOK_SECRET": self.payment_gateway_webhook_secret in {"", "dev-webhook-secret"},
+            "TICKET_BARCODE_SECRET": self.ticket_barcode_secret in {"", "change-this-ticket-secret", "change-this-too"},
+            "OTP_HASH_PEPPER": self.otp_hash_pepper in {"", "change-this-too"},
+            "MINIO_ENDPOINT": not bool(self.minio_endpoint.strip()),
+        }
+        missing = [name for name, invalid in placeholders.items() if invalid]
+        if missing:
+            raise ValueError(f"Production configuration contains missing or placeholder secrets: {', '.join(missing)}")
+        return self
 
 
 @lru_cache

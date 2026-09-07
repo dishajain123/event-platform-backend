@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -440,6 +440,35 @@ class NotificationService:
                     notification_type="feedback_reminder",
                     dedupe_key=f"feedback-reminder:{registration.id}",
                     target_metadata={**base_metadata, "deep_link": f"/events/{event.id}/feedback"},
+                )
+                if notification:
+                    created.append(notification.id)
+        # Volunteer shift reminders use the same idempotent scheduler and
+        # delivery preferences as every other automated notification.
+        from app.modules.volunteer_shifts.models import VolunteerAssignmentStatus, VolunteerShift, VolunteerShiftAssignment
+        shift_rows = await self.db.execute(
+            select(VolunteerShiftAssignment, VolunteerShift).join(
+                VolunteerShift, VolunteerShift.id == VolunteerShiftAssignment.shift_id
+            ).where(
+                VolunteerShiftAssignment.status.in_({VolunteerAssignmentStatus.APPROVED, VolunteerAssignmentStatus.ACTIVE}),
+                VolunteerShift.starts_at >= now,
+                VolunteerShift.starts_at <= now + timedelta(hours=25),
+            )
+        )
+        for assignment, shift in shift_rows.all():
+            starts_at = shift.starts_at
+            if starts_at.tzinfo is None:
+                starts_at = starts_at.replace(tzinfo=timezone.utc)
+            hours_to_shift = (starts_at - now).total_seconds() / 3600
+            if 23 <= hours_to_shift <= 25:
+                notification = await self._queue_automated(
+                    event_id=shift.event_id,
+                    user_id=assignment.user_id,
+                    title="Volunteer shift reminder",
+                    body=f"Your volunteer shift '{shift.title}' starts tomorrow.",
+                    notification_type="volunteer_shift",
+                    dedupe_key=f"volunteer-shift-reminder-24h:{assignment.id}",
+                    target_metadata={"shift_id": str(shift.id), "assignment_id": str(assignment.id), "deep_link": "/volunteers/shifts/mine"},
                 )
                 if notification:
                     created.append(notification.id)

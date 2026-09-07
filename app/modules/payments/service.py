@@ -324,7 +324,7 @@ class PaymentService:
         from app.modules.tickets.models import TicketStatus
         from app.modules.tickets.repository import TicketRepository
 
-        ticket = await TicketRepository(self.db).get_by_registration_id(payment.registration_id)
+        tickets = await TicketRepository(self.db).list_by_registration_id(payment.registration_id)
         payment.status = (
             PaymentStatus.REFUNDED
             if await self._refunded_amount(payment.id) >= Decimal(payment.amount)
@@ -335,8 +335,9 @@ class PaymentService:
             registration.cancelled_at = registration.cancelled_at or datetime.now(timezone.utc)
             if actor_id is not None:
                 registration.cancelled_by = actor_id
-            if ticket is not None and ticket.status == TicketStatus.ISSUED:
-                ticket.status = TicketStatus.CANCELLED
+            for ticket in tickets:
+                if ticket.status not in {TicketStatus.CANCELLED, TicketStatus.REVOKED}:
+                    ticket.status = TicketStatus.CANCELLED
             config = await self.configs.get_configuration(payment.event_id)
             event = await self.events.get_by_id(payment.event_id)
             if event is not None and config is not None and event.status == EventStatus.REGISTRATION_CLOSED:
@@ -349,6 +350,8 @@ class PaymentService:
                 )
                 if availability in {RegistrationAvailability.OPEN, RegistrationAvailability.LIMITED}:
                     event.status = EventStatus.REGISTRATION_OPEN
+            from app.modules.waitlists.service import WaitlistService
+            await WaitlistService(self.db).promote_next(payment.event_id, registration.participation_type)
         elif registration.status == RegistrationStatus.REFUND_PENDING:
             registration.status = RegistrationStatus.CONFIRMED
 
@@ -617,10 +620,10 @@ class PaymentService:
         from app.modules.tickets.models import TicketStatus
         from app.modules.tickets.repository import TicketRepository
 
-        ticket = await TicketRepository(self.db).get_by_registration_id(payment.registration_id)
+        tickets = await TicketRepository(self.db).list_by_registration_id(payment.registration_id)
         if (
             registration.status in {RegistrationStatus.CHECKED_IN, RegistrationStatus.COMPLETED}
-            or (ticket is not None and ticket.status == TicketStatus.CHECKED_IN)
+            or any(ticket.status == TicketStatus.CHECKED_IN for ticket in tickets)
         ) and refund_amount >= Decimal(payment.amount):
             raise InvalidRefundStateError("A checked-in or completed registration cannot be fully refunded.")
         refund = await self.refunds.create(
@@ -670,10 +673,10 @@ class PaymentService:
         from app.modules.tickets.models import TicketStatus
         from app.modules.tickets.repository import TicketRepository
 
-        ticket = await TicketRepository(self.db).get_by_registration_id(payment.registration_id)
+        tickets = await TicketRepository(self.db).list_by_registration_id(payment.registration_id)
         if (
             registration.status in {RegistrationStatus.CHECKED_IN, RegistrationStatus.COMPLETED}
-            or (ticket is not None and ticket.status == TicketStatus.CHECKED_IN)
+            or any(ticket.status == TicketStatus.CHECKED_IN for ticket in tickets)
         ) and Decimal(refund.amount) >= Decimal(payment.amount):
             raise InvalidRefundStateError("A checked-in or completed registration cannot be refunded.")
         refund.status = RefundStatus.PROCESSING

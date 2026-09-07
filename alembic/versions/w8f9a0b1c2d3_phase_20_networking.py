@@ -1,0 +1,24 @@
+"""phase 20 participant networking"""
+from alembic import op
+import sqlalchemy as sa
+
+revision = "w8f9a0b1c2d3"
+down_revision = "v7e8f9a0b1c2"
+branch_labels = None
+depends_on = None
+
+def upgrade():
+    op.create_table("event_networking_configs", sa.Column("id", sa.UUID(), nullable=False), sa.Column("created_at", sa.DateTime(timezone=True), nullable=False), sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False), sa.Column("event_id", sa.UUID(), nullable=False), sa.Column("enabled", sa.Boolean(), nullable=False), sa.Column("matchmaking_enabled", sa.Boolean(), nullable=False), sa.Column("allowed_participant_types", sa.JSON()), sa.ForeignKeyConstraint(["event_id"], ["events.id"], ondelete="CASCADE"), sa.PrimaryKeyConstraint("id"), sa.UniqueConstraint("event_id", name="uq_event_networking_config_event"))
+    op.create_table("networking_profiles", sa.Column("id", sa.UUID(), nullable=False), sa.Column("created_at", sa.DateTime(timezone=True), nullable=False), sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False), sa.Column("event_id", sa.UUID(), nullable=False), sa.Column("user_id", sa.UUID(), nullable=False), sa.Column("display_name", sa.String(255)), sa.Column("organization", sa.String(255)), sa.Column("designation", sa.String(255)), sa.Column("interests", sa.JSON(), nullable=False), sa.Column("skills", sa.JSON(), nullable=False), sa.Column("bio", sa.Text()), sa.Column("visibility", sa.Enum("VISIBLE", "HIDDEN", name="networkingvisibility"), nullable=False), sa.Column("share_contact", sa.Boolean(), nullable=False), sa.ForeignKeyConstraint(["event_id"], ["events.id"], ondelete="CASCADE"), sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"), sa.PrimaryKeyConstraint("id"), sa.UniqueConstraint("event_id", "user_id", name="uq_networking_profile_event_user"))
+    op.create_index("ix_networking_profiles_event_visibility", "networking_profiles", ["event_id", "visibility"])
+    op.create_table("networking_connections", sa.Column("id", sa.UUID(), nullable=False), sa.Column("created_at", sa.DateTime(timezone=True), nullable=False), sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False), sa.Column("event_id", sa.UUID(), nullable=False), sa.Column("participant_low_id", sa.UUID(), nullable=False), sa.Column("participant_high_id", sa.UUID(), nullable=False), sa.Column("requested_by", sa.UUID(), nullable=False), sa.Column("intent", sa.Enum("CONNECT", "DISCUSS", "COLLABORATE", name="connectionintent"), nullable=False), sa.Column("status", sa.Enum("PENDING", "ACCEPTED", "REJECTED", "CANCELLED", "BLOCKED", name="connectionstatus"), nullable=False), sa.Column("responded_at", sa.DateTime(timezone=True)), sa.ForeignKeyConstraint(["event_id"], ["events.id"], ondelete="CASCADE"), sa.ForeignKeyConstraint(["participant_low_id"], ["users.id"]), sa.ForeignKeyConstraint(["participant_high_id"], ["users.id"]), sa.ForeignKeyConstraint(["requested_by"], ["users.id"]), sa.PrimaryKeyConstraint("id"), sa.UniqueConstraint("event_id", "participant_low_id", "participant_high_id", name="uq_networking_connection_pair"))
+    op.create_index("ix_networking_connections_event_status", "networking_connections", ["event_id", "status", "created_at"])
+    op.create_table("networking_reports", sa.Column("id", sa.UUID(), nullable=False), sa.Column("created_at", sa.DateTime(timezone=True), nullable=False), sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False), sa.Column("event_id", sa.UUID(), nullable=False), sa.Column("reporter_id", sa.UUID(), nullable=False), sa.Column("reported_user_id", sa.UUID(), nullable=False), sa.Column("reason", sa.Text(), nullable=False), sa.Column("status", sa.Enum("OPEN", "REVIEWED", "RESOLVED", "DISMISSED", name="networkingreportstatus"), nullable=False), sa.Column("reviewed_by", sa.UUID()), sa.Column("resolution_notes", sa.Text()), sa.ForeignKeyConstraint(["event_id"], ["events.id"], ondelete="CASCADE"), sa.ForeignKeyConstraint(["reporter_id"], ["users.id"]), sa.ForeignKeyConstraint(["reported_user_id"], ["users.id"]), sa.ForeignKeyConstraint(["reviewed_by"], ["users.id"]), sa.PrimaryKeyConstraint("id"))
+    op.create_index("ix_networking_reports_event_status_created", "networking_reports", ["event_id", "status", "created_at"])
+
+def downgrade():
+    op.drop_index("ix_networking_reports_event_status_created", table_name="networking_reports"); op.drop_table("networking_reports")
+    op.drop_index("ix_networking_connections_event_status", table_name="networking_connections"); op.drop_table("networking_connections")
+    op.drop_index("ix_networking_profiles_event_visibility", table_name="networking_profiles"); op.drop_table("networking_profiles")
+    op.drop_table("event_networking_configs")
+    op.execute("DROP TYPE IF EXISTS networkingreportstatus"); op.execute("DROP TYPE IF EXISTS connectionstatus"); op.execute("DROP TYPE IF EXISTS connectionintent"); op.execute("DROP TYPE IF EXISTS networkingvisibility")

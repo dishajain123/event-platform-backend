@@ -15,8 +15,9 @@ class AppError(Exception):
     status_code: int = status.HTTP_400_BAD_REQUEST
     error_code: str = "app_error"
 
-    def __init__(self, message: str, *, error_code: str | None = None):
+    def __init__(self, message: str, *, error_code: str | None = None, details: dict | None = None):
         self.message = message
+        self.details = details
         if error_code:
             self.error_code = error_code
         super().__init__(message)
@@ -50,7 +51,10 @@ class RateLimitedError(AppError):
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
+        content = {"error_code": exc.error_code, "message": exc.message}
+        if exc.details is not None:
+            content["details"] = exc.details
         return JSONResponse(
             status_code=exc.status_code,
-            content={"error_code": exc.error_code, "message": exc.message},
+            content=content,
         )

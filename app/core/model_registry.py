@@ -29,3 +29,9 @@ from app.modules.media import models as media_models  # noqa: F401
 from app.modules.feedback import models as feedback_models  # noqa: F401
 from app.modules.sponsorships import models as sponsorship_models  # noqa: F401
 from app.modules.volunteers import models as volunteer_models  # noqa: F401
+from app.modules.waitlists import models as waitlist_models  # noqa: F401
+from app.modules.incidents import models as incident_models  # noqa: F401
+from app.modules.certificates import models as certificate_models  # noqa: F401
+from app.modules.volunteer_shifts import models as volunteer_shift_models  # noqa: F401
+from app.modules.interactions import models as interaction_models  # noqa: F401
+from app.modules.networking import models as networking_models  # noqa: F401

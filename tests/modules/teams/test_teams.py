@@ -79,6 +79,14 @@ async def test_team_invite_respond_submit_and_approve(db_session):
     # No fee configured and no approval required at submission time -> auto-approved and ticketed immediately.
     assert registration.status == RegistrationStatus.CONFIRMED
 
+    # A team registration is the capacity/payment aggregate, but every
+    # accepted member gets an independently owned, scannable ticket.
+    from app.modules.tickets.repository import TicketRepository
+    tickets = await TicketRepository(db_session).list_by_registration_id(registration.id)
+    assert len(tickets) == 2
+    assert {ticket.user_id for ticket in tickets} == {captain.id, invitee.id}
+    assert len({ticket.ticket_code for ticket in tickets}) == 2
+
     team = await service.approve_team(team.id, approver)
     assert team.status == TeamStatus.APPROVED
 

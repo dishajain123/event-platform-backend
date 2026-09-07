@@ -4,13 +4,15 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from app.exceptions import PermissionDeniedError, ValidationError
+from app.exceptions import ConflictError, PermissionDeniedError, ValidationError
 from app.modules.config_engine.service import ConfigEngineService
 from app.modules.events.models import EventStatus
 from app.modules.events.service import EventService
 from app.modules.identity.models import User
 from app.modules.rbac.models import Role, RoleAssignment, RoleName
-from app.modules.sponsorships.models import SponsorshipInquiryStatus
+from app.modules.networking.models import EventNetworkingConfig, NetworkingProfile, NetworkingVisibility
+from app.modules.registrations.models import Registration, RegistrationStatus
+from app.modules.sponsorships.models import SponsorEngagementType, SponsorLeadStatus, SponsorshipDeliverableStatus, SponsorshipInquiryStatus
 from app.modules.sponsorships.service import SponsorshipService
 
 
@@ -94,6 +96,36 @@ async def test_inquiry_owner_operations_and_event_manager_scope(db_session):
     with pytest.raises(ValidationError):
         await service.update_status(operations, inquiry.id, SponsorshipInquiryStatus.APPROVED)
 
+    db_session.add(EventNetworkingConfig(event_id=event.id, enabled=True, matchmaking_enabled=True))
+    db_session.add(Registration(event_id=event.id, user_id=manager.id, participation_type="participant", status=RegistrationStatus.CONFIRMED))
+    db_session.add(NetworkingProfile(event_id=event.id, user_id=manager.id, display_name="Event Manager", visibility=NetworkingVisibility.VISIBLE))
+    await db_session.commit()
+    engagement = await service.capture_engagement(applicant, event.id, {
+        "sponsor_id": sponsor.id,
+        "participant_id": manager.id,
+        "engagement_type": SponsorEngagementType.LEAD_CAPTURE,
+        "consent_given": True,
+        "consent_source": "booth_form",
+        "note": "Interested in the sponsor offering",
+    })
+    assert engagement["consent_status"].value == "given"
+    with pytest.raises(ConflictError):
+        await service.capture_engagement(applicant, event.id, {
+            "sponsor_id": sponsor.id,
+            "participant_id": manager.id,
+            "engagement_type": SponsorEngagementType.LEAD_CAPTURE,
+            "consent_given": True,
+            "consent_source": "booth_form",
+        })
+    updated = await service.update_lead_status(applicant, engagement["id"], SponsorLeadStatus.QUALIFIED)
+    assert updated["lead_status"].value == "qualified"
+    withdrawn = await service.update_consent(manager, engagement["id"], False, None)
+    assert withdrawn["consent_status"].value == "withdrawn"
+    metrics = await service.engagement_metrics(applicant, event.id, sponsor.id)
+    assert metrics["total_leads"] == 1 and metrics["unsubscribed_leads"] == 1
+    with pytest.raises(PermissionDeniedError):
+        await service.get_engagement(outsider, engagement["id"])
+
 
 @pytest.mark.asyncio
 async def test_inquiry_rejects_inactive_or_mismatched_package(db_session):
@@ -125,3 +157,37 @@ async def test_inquiry_rejects_inactive_or_mismatched_package(db_session):
     payload["package_id"] = package.id
     with pytest.raises(ValidationError):
         await service.create_inquiry(applicant, payload)
+
+
+@pytest.mark.asyncio
+async def test_sponsor_fulfillment_metrics_and_scope(db_session):
+    creator = User(mobile_number="+919700000031")
+    applicant = User(mobile_number="+919700000032")
+    manager = User(mobile_number="+919700000033")
+    outsider = User(mobile_number="+919700000034")
+    db_session.add_all([creator, applicant, manager, outsider])
+    await db_session.flush()
+    event = await _public_event(db_session, creator)
+    await _role(db_session, manager, RoleName.EVENT_MANAGER, event.id)
+    service = SponsorshipService(db_session)
+    inquiry = await service.create_inquiry(applicant, {"company_name": "Metrics Partner", "contact_person": "Owner", "phone": "+919700000032", "email": "metrics@example.com", "event_ids": [event.id], "category_id": None})
+    await service.update_status(manager, inquiry.id, SponsorshipInquiryStatus.APPROVED)
+    sponsor = await service.assign_sponsor(manager, inquiry.id, {"event_id": event.id, "tier": "gold", "category": "Branding", "committed_value": 12500})
+    first = await service.create_deliverable(manager, sponsor.id, {"deliverable_type": "logo", "description": "Logo on stage", "due_date": datetime.now(timezone.utc) - timedelta(days=1)})
+    second = await service.create_deliverable(manager, sponsor.id, {"deliverable_type": "passes", "description": "Complimentary passes", "quantity": 10})
+    metrics = await service.get_metrics(manager, event.id)
+    assert metrics.total_sponsors == 1
+    assert metrics.confirmed_value == 12500
+    assert metrics.paid_value is None
+    assert metrics.total_deliverables == 2
+    assert metrics.pending_deliverables == 2
+    assert metrics.overdue_deliverables == 1
+    assert metrics.fulfillment_percentage == 0.0
+    with pytest.raises(PermissionDeniedError):
+        await service.get_metrics(outsider, event.id)
+    await service.update_deliverable(manager, first.id, {"status": SponsorshipDeliverableStatus.IN_PROGRESS})
+    await service.update_deliverable(manager, first.id, {"status": SponsorshipDeliverableStatus.COMPLETED, "completion_notes": "Installed"})
+    summary = await service.sponsor_summary(manager, sponsor.id)
+    assert summary.completed_deliverables == 1
+    assert summary.overdue_deliverables == 0
+    assert summary.fulfillment_percentage == 50.0

@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, Enum, ForeignKey, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType
@@ -31,6 +31,14 @@ class SponsorStatus(StrEnum):
     CONFIRMED = "confirmed"
     ACTIVE = "active"
     INACTIVE = "inactive"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class ScheduleStatus(StrEnum):
+    SCHEDULED = "scheduled"
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
 
 
 # The valid state graph. Every transition not listed here is rejected —
@@ -88,26 +96,52 @@ class Event(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     sponsors: Mapped[list["Sponsor"]] = relationship(back_populates="event", cascade="all, delete-orphan")
 
 
+class EventTemplate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Immutable-by-snapshot reusable event configuration owned by an organizer."""
+
+    __tablename__ = "event_templates"
+    __table_args__ = (Index("ix_event_templates_owner_archived", "owner_user_id", "is_archived", "created_at"),)
+
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("users.id"), nullable=False, index=True)
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType, ForeignKey("organizations.id"), default=None)
+    source_event_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType, ForeignKey("events.id"), default=None)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, default=None)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
 class Venue(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "venues"
+    __table_args__ = (Index("ix_venues_shared_id", "id", "is_shared"),)
 
     event_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("events.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     address: Mapped[str | None] = mapped_column(String(500), default=None)
     latitude: Mapped[float | None] = mapped_column(Numeric(9, 6), default=None)
     longitude: Mapped[float | None] = mapped_column(Numeric(9, 6), default=None)
+    capacity: Mapped[int | None] = mapped_column(Integer, default=None)
+    availability: Mapped[list | None] = mapped_column(JSON, default=list)
+    is_shared: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     event: Mapped["Event"] = relationship(back_populates="venues")
 
 
 class ScheduleItem(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "schedule_items"
+    __table_args__ = (
+        Index("ix_schedule_items_venue_window", "venue_id", "start_time", "end_time", "status"),
+        Index("ix_schedule_items_resource_window", "resource_key", "start_time", "end_time", "status"),
+    )
 
     event_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("events.id"), nullable=False)
     venue_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType, ForeignKey("venues.id"), default=None)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     end_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    resource_key: Mapped[str | None] = mapped_column(String(120), default=None)
+    expected_capacity: Mapped[int | None] = mapped_column(Integer, default=None)
+    status: Mapped[ScheduleStatus] = mapped_column(Enum(ScheduleStatus), default=ScheduleStatus.SCHEDULED, nullable=False)
 
     event: Mapped["Event"] = relationship(back_populates="schedule_items")
 
@@ -129,6 +163,8 @@ class Sponsor(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     benefits: Mapped[list | None] = mapped_column(JSON, default=list)
     website_url: Mapped[str | None] = mapped_column(String(500), default=None)
     contact_email: Mapped[str | None] = mapped_column(String(320), default=None)
+    committed_value: Mapped[float | None] = mapped_column(Numeric(12, 2), default=None)
+    paid_value: Mapped[float | None] = mapped_column(Numeric(12, 2), default=None)
     inquiry_id: Mapped[uuid.UUID | None] = mapped_column(
         UUIDType, ForeignKey("sponsorship_inquiries.id"), default=None, index=True
     )
