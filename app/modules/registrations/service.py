@@ -14,6 +14,7 @@ from app.modules.config_engine.service import ConfigEngineService
 from app.modules.config_engine.registration_state import (
     RegistrationAvailability,
     calculate_registration_availability,
+    parse_cancellation_deadline_at,
     parse_registration_end_at,
 )
 from app.modules.events.exceptions import EventNotFoundError
@@ -50,6 +51,25 @@ class RegistrationService:
         if event is None:
             raise EventNotFoundError("Event not found.")
         return event
+
+    async def page_registrations(
+        self,
+        event_ids: set[uuid.UUID] | None,
+        *,
+        page: int,
+        page_size: int,
+        search: str | None = None,
+        status=None,
+        participation_type: str | None = None,
+    ):
+        return await self.registrations.page_for_events(
+            event_ids,
+            page=page,
+            page_size=page_size,
+            search=search,
+            status=status,
+            participation_type=participation_type,
+        )
 
     async def _get_config_or_raise(self, event_id: uuid.UUID):
         config = await self.config.get_configuration(event_id)
@@ -200,6 +220,7 @@ class RegistrationService:
             participation_type=participation_type,
             status=RegistrationStatus.STARTED,
             submitted_at=datetime.now(timezone.utc),
+            cancellation_deadline_at=parse_cancellation_deadline_at(config.details),
         )
         for participant in participants:
             await self.registrations.add_participant(
@@ -254,7 +275,7 @@ class RegistrationService:
         # previously never received a ticket at all — ticket issuance
         # was only ever wired to the payment webhook, a path a free
         # event's registration never touches. Without this, check-in
-        # via QR scan was completely impossible for any free event.
+        # via barcode scan was completely impossible for any free event.
         if registration.status == RegistrationStatus.APPROVED and (
             config.fee_amount is None or float(config.fee_amount) == 0
         ):
@@ -367,4 +388,108 @@ class RegistrationService:
         await self.db.commit()
         # Same fix as create_registration — re-fetch with participants
         # eager-loaded rather than a plain db.refresh().
+        return await self.registrations.get_by_id(registration.id)
+
+    async def _reopen_event_if_capacity_available(self, event, config) -> None:
+        """Release a seat without reopening an event past its deadline."""
+        if event.status != EventStatus.REGISTRATION_CLOSED or config.capacity is None:
+            return
+        count = await self.registrations.count_active_for_event(event.id)
+        availability = calculate_registration_availability(
+            event_status=EventStatus.REGISTRATION_OPEN,
+            capacity=config.capacity,
+            registered_count=count,
+            registration_end_at=parse_registration_end_at(config.details),
+        )
+        if availability in {RegistrationAvailability.OPEN, RegistrationAvailability.LIMITED}:
+            event.status = EventStatus.REGISTRATION_OPEN
+
+    async def cancel_registration(
+        self, registration_id: uuid.UUID, actor: User, reason: str | None = None
+    ) -> Registration:
+        """Cancel a registration, or begin its payment refund lifecycle."""
+        registration = await self.get_registration_or_raise(registration_id)
+        await acquire_event_capacity_lock(self.db, registration.event_id)
+        registration = await self.get_registration_or_raise(registration_id)
+        is_owner = registration.user_id == actor.id
+        if not is_owner and not await user_has_scoped_role(
+            self.db,
+            actor.id,
+            {RoleName.EVENT_MANAGER},
+            registration.event_id,
+            allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
+        ):
+            raise RegistrationScopeError("You cannot cancel this registration.")
+
+        eligible = {
+            RegistrationStatus.STARTED,
+            RegistrationStatus.SUBMITTED,
+            RegistrationStatus.PENDING_VERIFICATION,
+            RegistrationStatus.PENDING_PAYMENT,
+            RegistrationStatus.APPROVED,
+            RegistrationStatus.CONFIRMED,
+            RegistrationStatus.REFUND_FAILED,
+        }
+        if registration.status not in eligible:
+            raise InvalidRegistrationStateError(
+                f"Registration is already in '{registration.status.value}' and cannot be cancelled."
+            )
+
+        if registration.child_id is not None and is_owner:
+            await self.guardians.ensure_guardian_can_register_for_child(actor.id, registration.child_id)
+
+        event = await self._get_event_or_raise(registration.event_id)
+        config = await self._get_config_or_raise(registration.event_id)
+        cancellation_deadline = registration.cancellation_deadline_at
+        if cancellation_deadline is None:
+            cancellation_deadline = parse_cancellation_deadline_at(config.details)
+        if is_owner and cancellation_deadline is not None:
+            deadline = cancellation_deadline
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) >= deadline:
+                raise InvalidRegistrationStateError("The cancellation deadline has passed.")
+
+        now = datetime.now(timezone.utc)
+        registration.cancellation_requested_at = now
+        registration.cancellation_reason = reason
+        registration.cancelled_by = actor.id
+        registration.cancellation_deadline_at = cancellation_deadline
+
+        from app.modules.payments.models import PaymentStatus
+        from app.modules.payments.service import PaymentService
+        from app.modules.tickets.models import TicketStatus
+        from app.modules.tickets.repository import TicketRepository
+
+        payment = await PaymentService(self.db).payments.get_by_registration_id(registration.id)
+        if payment is not None and payment.status == PaymentStatus.VERIFIED:
+            await PaymentService(self.db).request_refund(
+                payment_id=payment.id,
+                actor=actor,
+                amount=None,
+                reason=reason or "Participant cancellation",
+                commit=False,
+            )
+            registration.status = RegistrationStatus.REFUND_PENDING
+            action = "refund_requested_for_cancellation"
+        else:
+            if payment is not None and payment.status == PaymentStatus.INITIATED:
+                payment.status = PaymentStatus.FAILED
+            registration.status = RegistrationStatus.CANCELLED
+            registration.cancelled_at = now
+            ticket = await TicketRepository(self.db).get_by_registration_id(registration.id)
+            if ticket is not None and ticket.status == TicketStatus.ISSUED:
+                ticket.status = TicketStatus.CANCELLED
+            await self._reopen_event_if_capacity_available(event, config)
+            action = "cancelled"
+
+        await write_audit_log(
+            self.db,
+            entity_type="registration",
+            entity_id=registration.id,
+            action=action,
+            actor_user_id=actor.id,
+            after_value={"status": registration.status.value, "reason": reason},
+        )
+        await self.db.commit()
         return await self.registrations.get_by_id(registration.id)

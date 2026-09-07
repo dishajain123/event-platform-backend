@@ -19,6 +19,7 @@ from app.modules.registrations.exceptions import (
     DuplicateRegistrationError,
     InvalidRegistrationStateError,
     RegistrationCapacityExceededError,
+    RegistrationScopeError,
 )
 from app.modules.registrations.service import RegistrationService
 
@@ -30,6 +31,7 @@ async def _make_event(
     creator_mobile: str = "+919100000001",
     capacity: int | None = 10,
     registration_end_at: datetime | None = None,
+    cancellation_deadline_at: datetime | None = None,
 ):
     creator = User(mobile_number=creator_mobile)
     db_session.add(creator)
@@ -53,6 +55,11 @@ async def _make_event(
         capacity=capacity,
         approval_required=approval_required,
         registration_end_at=registration_end_at,
+        details=(
+            {"cancellation_deadline_at": cancellation_deadline_at.isoformat()}
+            if cancellation_deadline_at is not None
+            else {}
+        ),
         rules={},
         discount_rules=None,
     )
@@ -280,6 +287,88 @@ async def test_registration_list_route_requires_event_scope_for_non_global_users
 
 
 @pytest.mark.asyncio
+async def test_owner_can_cancel_free_registration_and_release_capacity(db_session):
+    event, actor = await _make_event(db_session, capacity=1)
+    service = RegistrationService(db_session)
+    registration = await service.create_registration(
+        event_id=event.id,
+        actor=actor,
+        participation_type="individual",
+        date_of_birth=date(2012, 1, 1),
+        child_id=None,
+        team_id=None,
+        documents_provided=[],
+        answers={},
+        participants=[],
+    )
+
+    cancelled = await service.cancel_registration(registration.id, actor, "Plans changed")
+    assert cancelled.status.value == "cancelled"
+    assert cancelled.payment_status is None
+    assert await service.registrations.count_active_for_event(event.id) == 0
+
+    replacement = User(mobile_number="+919100009999")
+    db_session.add(replacement)
+    await db_session.flush()
+    replacement_registration = await service.create_registration(
+        event_id=event.id,
+        actor=replacement,
+        participation_type="individual",
+        date_of_birth=date(2012, 1, 1),
+        child_id=None,
+        team_id=None,
+        documents_provided=[],
+        answers={},
+        participants=[],
+    )
+    assert replacement_registration.status.value == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_user_cannot_cancel_registration(db_session):
+    event, owner = await _make_event(db_session)
+    outsider = User(mobile_number="+919100009998")
+    db_session.add(outsider)
+    await db_session.flush()
+    registration = await RegistrationService(db_session).create_registration(
+        event_id=event.id,
+        actor=owner,
+        participation_type="individual",
+        date_of_birth=date(2012, 1, 1),
+        child_id=None,
+        team_id=None,
+        documents_provided=[],
+        answers={},
+        participants=[],
+    )
+
+    with pytest.raises(RegistrationScopeError):
+        await RegistrationService(db_session).cancel_registration(registration.id, outsider)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_deadline_is_enforced_server_side(db_session):
+    event, actor = await _make_event(
+        db_session,
+        cancellation_deadline_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    registration = await RegistrationService(db_session).create_registration(
+        event_id=event.id,
+        actor=actor,
+        participation_type="individual",
+        date_of_birth=date(2012, 1, 1),
+        child_id=None,
+        team_id=None,
+        documents_provided=[],
+        answers={},
+        participants=[],
+    )
+
+    with pytest.raises(InvalidRegistrationStateError, match="deadline"):
+        await RegistrationService(db_session).cancel_registration(registration.id, actor)
+
+
+@pytest.mark.asyncio
 async def test_registration_list_scopes_managers_and_supports_operations_all_events(db_session):
     event_a, _ = await _make_event(db_session)
     event_b, _ = await _make_event(db_session, creator_mobile="+919100000012")
@@ -386,3 +475,39 @@ async def test_registration_list_without_scope_remains_user_scoped_for_mobile_us
         service=service,
     )
     assert [registration.id for registration in visible] == [own.id]
+
+
+@pytest.mark.asyncio
+async def test_scoped_registration_pagination_filters_in_sql(db_session):
+    event, _ = await _make_event(db_session)
+    manager = User(mobile_number="+919100000014")
+    participants = [User(mobile_number=f"+91910000001{value}") for value in (5, 6, 7)]
+    db_session.add(manager)
+    db_session.add_all(participants)
+    await db_session.flush()
+    await _assign_role(db_session, manager, RoleName.EVENT_MANAGER, event.id)
+    service = RegistrationService(db_session)
+    for participant, name in zip(participants, ("Alpha Runner", "Beta Runner", "Gamma Viewer")):
+        await service.create_registration(
+            event_id=event.id,
+            actor=participant,
+            participation_type="individual",
+            date_of_birth=date(2012, 1, 1),
+            child_id=None,
+            team_id=None,
+            documents_provided=[],
+            answers={},
+            participants=[{"full_name": name}],
+        )
+    page = await list_registrations(
+        event_id=event.id,
+        page=1,
+        page_size=1,
+        search="Beta",
+        current_user=manager,
+        db=db_session,
+        service=service,
+    )
+    assert page.total == 1
+    assert page.page_size == 1
+    assert page.items[0].participants[0].full_name == "Beta Runner"

@@ -75,6 +75,17 @@ class VolunteerService:
                 event_ids = {event_id}
         return await self.repo.list_for_events(event_ids, status, search, application_type)
 
+    async def page_manageable(self, actor: User, event_id=None, status=None, search=None, application_type=None, *, page=1, page_size=25):
+        if await self._global_manage(actor):
+            event_ids = {event_id} if event_id else None
+        else:
+            event_ids = await user_scoped_event_ids(self.db, actor.id, {RoleName.EVENT_MANAGER})
+            if event_id is not None:
+                if event_id not in event_ids:
+                    raise PermissionDeniedError("You don't have permission to manage volunteers for this event.")
+                event_ids = {event_id}
+        return await self.repo.page_for_events(event_ids, page=page, page_size=page_size, status=status, search=search, application_type=application_type)
+
     async def get_visible(self, actor: User, application_id: uuid.UUID):
         item = await self._get_or_raise(application_id)
         if item.user_id == actor.id or await self._can_manage_event(actor, item.event_id):

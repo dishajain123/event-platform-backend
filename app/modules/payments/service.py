@@ -3,7 +3,7 @@ Payment initiation, webhook verification, and refund approval logic.
 """
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -12,9 +12,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.audit import write_audit_log
 from app.core.concurrency import acquire_advisory_lock
+from app.core.concurrency import acquire_event_capacity_lock
 from app.integrations.payment_gateway_client import get_payment_gateway_client
 from app.modules.config_engine.service import ConfigEngineService
+from app.modules.config_engine.registration_state import (
+    RegistrationAvailability,
+    calculate_registration_availability,
+    parse_registration_end_at,
+)
 from app.modules.events.exceptions import EventNotFoundError
+from app.modules.events.models import EventStatus
 from app.modules.events.repository import EventRepository
 from app.modules.identity.models import User
 from app.modules.payments.exceptions import (
@@ -26,8 +33,21 @@ from app.modules.payments.exceptions import (
     PaymentVerificationFailedError,
     RefundNotFoundError,
 )
-from app.modules.payments.models import DiscountType, Payment, PaymentStatus, Refund, RefundStatus
-from app.modules.payments.repository import DiscountCodeRepository, PaymentRepository, RefundRepository
+from app.modules.payments.models import (
+    DiscountType,
+    Payment,
+    PaymentStatus,
+    PaymentWebhookInbox,
+    Refund,
+    RefundStatus,
+    WebhookProcessingStatus,
+)
+from app.modules.payments.repository import (
+    DiscountCodeRepository,
+    PaymentRepository,
+    PaymentWebhookInboxRepository,
+    RefundRepository,
+)
 from app.modules.registrations.models import RegistrationStatus
 from app.modules.registrations.repository import RegistrationRepository
 
@@ -39,6 +59,7 @@ class PaymentService:
         self.gateway = get_payment_gateway_client()
         self.payments = PaymentRepository(db)
         self.refunds = RefundRepository(db)
+        self.webhook_inbox = PaymentWebhookInboxRepository(db)
         self.discount_codes = DiscountCodeRepository(db)
         self.registrations = RegistrationRepository(db)
         self.events = EventRepository(db)
@@ -141,6 +162,9 @@ class PaymentService:
             return payments
         return [payment for payment in payments if payment.event_id == event_id]
 
+    async def page_payments(self, **filters):
+        return await self.payments.page_all(**filters)
+
     async def handle_webhook(
         self, gateway_order_id: str, gateway_payment_id: str, gateway_signature: str
     ) -> Payment:
@@ -173,25 +197,163 @@ class PaymentService:
         if not self.gateway.verify_webhook_signature(body, signature):
             raise PaymentVerificationFailedError("Webhook signature verification failed.")
         event_name = payload.get("event")
+        provider_event_id = payload.get("id") or payload.get("event_id")
+        if not provider_event_id or not event_name:
+            raise PaymentVerificationFailedError("Webhook is missing provider event identifiers.")
+        await acquire_advisory_lock(self.db, f"payment_webhook:{provider_event_id}")
+        inbox = await self.webhook_inbox.get_by_event_id(str(provider_event_id))
+        if inbox is not None and inbox.processing_status == WebhookProcessingStatus.PROCESSED:
+            return await self._payment_for_webhook_payload(payload)
+        if inbox is None:
+            inbox = await self.webhook_inbox.create(
+                provider_event_id=str(provider_event_id),
+                provider="razorpay",
+                event_type=event_name,
+                received_at=datetime.now(timezone.utc),
+                payload=payload,
+                processing_status=WebhookProcessingStatus.RECEIVED,
+            )
+            await self.db.commit()
+        inbox.processing_status = WebhookProcessingStatus.PROCESSING
+        inbox.attempts += 1
+        await self.db.commit()
+        try:
+            payment = await self._process_webhook_payload(payload)
+            inbox.processing_status = WebhookProcessingStatus.PROCESSED
+            inbox.processed_at = datetime.now(timezone.utc)
+            inbox.failure_reason = None
+            await self.db.commit()
+            return payment
+        except Exception as exc:
+            await self.db.rollback()
+            inbox = await self.webhook_inbox.get_by_event_id(str(provider_event_id))
+            if inbox is not None:
+                inbox.processing_status = WebhookProcessingStatus.FAILED
+                inbox.failure_reason = str(exc)[:1000]
+                await self.db.commit()
+            raise
+
+    async def _payment_for_webhook_payload(self, payload: dict) -> Payment:
         entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
-        if event_name not in {"payment.captured", "payment.authorized"}:
-            raise InvalidPaymentStateError("Unsupported payment webhook event.")
-        order_id = entity.get("order_id")
-        payment_id = entity.get("id")
-        if not order_id or not payment_id:
-            raise PaymentVerificationFailedError("Webhook is missing payment identifiers.")
-        result = await self.db.execute(select(Payment).where(Payment.gateway_order_id == order_id))
+        if not entity:
+            entity = payload.get("payload", {}).get("refund", {}).get("entity", {})
+        payment_id = entity.get("order_id") or entity.get("payment_id")
+        result = await self.db.execute(
+            select(Payment).where(
+                (Payment.gateway_order_id == payment_id) | (Payment.gateway_payment_id == payment_id)
+            )
+        )
         payment = result.scalar_one_or_none()
         if payment is None:
             raise PaymentNotFoundError("Payment not found.")
-        if payment.status == PaymentStatus.REFUNDED:
+        return payment
+
+    async def _process_webhook_payload(self, payload: dict) -> Payment:
+        event_name = payload["event"]
+        payment_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
+        refund_entity = payload.get("payload", {}).get("refund", {}).get("entity", {})
+        if event_name in {"payment.captured", "payment.authorized"}:
+            order_id = payment_entity.get("order_id")
+            payment_id = payment_entity.get("id")
+            if not order_id or not payment_id:
+                raise PaymentVerificationFailedError("Webhook is missing payment identifiers.")
+            result = await self.db.execute(select(Payment).where(Payment.gateway_order_id == order_id))
+            payment = result.scalar_one_or_none()
+            if payment is None:
+                raise PaymentNotFoundError("Payment not found.")
+            if payment.status != PaymentStatus.REFUNDED:
+                payment = await self._verify_payment(
+                    payment,
+                    payment_id,
+                    self.gateway.payment_signature(order_id=order_id, payment_id=payment_id),
+                    commit=False,
+                )
             return payment
-        return await self._verify_payment(
-            payment, payment_id, self.gateway.payment_signature(order_id=order_id, payment_id=payment_id)
+        if event_name.startswith("refund."):
+            return await self._process_refund_webhook(refund_entity, event_name)
+        raise InvalidPaymentStateError("Unsupported payment webhook event.")
+
+    async def _process_refund_webhook(self, entity: dict, event_name: str) -> Payment:
+        gateway_refund_id = entity.get("id")
+        gateway_payment_id = entity.get("payment_id")
+        if not gateway_refund_id or not gateway_payment_id:
+            raise PaymentVerificationFailedError("Refund webhook is missing provider identifiers.")
+        payment_result = await self.db.execute(
+            select(Payment).where(Payment.gateway_payment_id == gateway_payment_id)
         )
+        payment = payment_result.scalar_one_or_none()
+        if payment is None:
+            raise PaymentNotFoundError("Payment not found for refund webhook.")
+        refund = await self.refunds.get_by_gateway_refund_id(gateway_refund_id)
+        if refund is None:
+            refund = await self.refunds.get_latest_for_payment(payment.id)
+        if refund is None:
+            raise InvalidRefundStateError("Refund webhook does not match a local refund request.")
+        provider_amount = entity.get("amount")
+        if provider_amount is not None and int(provider_amount) != int(Decimal(refund.amount) * 100):
+            refund.reconciliation_error = "Provider refund amount does not match the local refund request."
+            raise InvalidRefundStateError(refund.reconciliation_error)
+        refund.gateway_refund_id = gateway_refund_id
+        if refund.status == RefundStatus.PROCESSED:
+            return payment
+        if event_name in {"refund.processed"} and entity.get("status") in {None, "processed"}:
+            refund.status = RefundStatus.PROCESSED
+            refund.processed_at = datetime.now(timezone.utc)
+            await self._apply_processed_refund(refund, payment, actor_id=None)
+        elif event_name in {"refund.created"} and entity.get("status") in {None, "created", "pending"}:
+            refund.status = RefundStatus.PROCESSING
+        elif event_name in {"refund.failed", "refund.cancelled"}:
+            refund.gateway_refund_id = gateway_refund_id
+            refund.status = RefundStatus.FAILED
+            refund.failure_reason = entity.get("error_description") or f"Provider event: {event_name}"
+            registration = await self.registrations.get_by_id(payment.registration_id)
+            if registration is not None and registration.status == RegistrationStatus.REFUND_PENDING:
+                registration.status = RegistrationStatus.REFUND_FAILED
+        else:
+            refund.status = RefundStatus.PROCESSING
+        refund.last_reconciled_at = datetime.now(timezone.utc)
+        return payment
+
+    async def _apply_processed_refund(
+        self, refund: Refund, payment: Payment, actor_id: uuid.UUID | None
+    ) -> None:
+        """Apply the same terminal refund transition for approval and provider callbacks."""
+        registration = await self.registrations.get_by_id(payment.registration_id)
+        if registration is None:
+            raise InvalidPaymentStateError("Registration not found for refund.")
+        from app.modules.tickets.models import TicketStatus
+        from app.modules.tickets.repository import TicketRepository
+
+        ticket = await TicketRepository(self.db).get_by_registration_id(payment.registration_id)
+        payment.status = (
+            PaymentStatus.REFUNDED
+            if await self._refunded_amount(payment.id) >= Decimal(payment.amount)
+            else PaymentStatus.VERIFIED
+        )
+        if payment.status == PaymentStatus.REFUNDED:
+            registration.status = RegistrationStatus.CANCELLED
+            registration.cancelled_at = registration.cancelled_at or datetime.now(timezone.utc)
+            if actor_id is not None:
+                registration.cancelled_by = actor_id
+            if ticket is not None and ticket.status == TicketStatus.ISSUED:
+                ticket.status = TicketStatus.CANCELLED
+            config = await self.configs.get_configuration(payment.event_id)
+            event = await self.events.get_by_id(payment.event_id)
+            if event is not None and config is not None and event.status == EventStatus.REGISTRATION_CLOSED:
+                registered_count = await self.registrations.count_active_for_event(payment.event_id)
+                availability = calculate_registration_availability(
+                    event_status=EventStatus.REGISTRATION_OPEN,
+                    capacity=config.capacity,
+                    registered_count=registered_count,
+                    registration_end_at=parse_registration_end_at(config.details),
+                )
+                if availability in {RegistrationAvailability.OPEN, RegistrationAvailability.LIMITED}:
+                    event.status = EventStatus.REGISTRATION_OPEN
+        elif registration.status == RegistrationStatus.REFUND_PENDING:
+            registration.status = RegistrationStatus.CONFIRMED
 
     async def _verify_payment(
-        self, payment: Payment, gateway_payment_id: str, gateway_signature: str
+        self, payment: Payment, gateway_payment_id: str, gateway_signature: str, *, commit: bool = True
     ) -> Payment:
         await acquire_advisory_lock(self.db, f"payment_verification:{payment.id}")
         await self.db.refresh(payment)
@@ -209,7 +371,10 @@ class PaymentService:
         )
         if not payment_valid:
             payment.status = PaymentStatus.FAILED
-            await self.db.commit()
+            payment.reconciliation_status = "failed"
+            payment.reconciliation_error = "Payment signature verification failed."
+            if commit:
+                await self.db.commit()
             raise PaymentVerificationFailedError("Payment signature verification failed.")
 
         registration = await self.registrations.get_by_id(payment.registration_id)
@@ -221,6 +386,8 @@ class PaymentService:
         payment.gateway_payment_id = gateway_payment_id
         payment.gateway_signature = gateway_signature
         payment.status = PaymentStatus.VERIFIED
+        payment.reconciliation_status = "verified"
+        payment.reconciliation_error = None
         payment.verified_at = datetime.now(timezone.utc)
         payment.captured_at = datetime.now(timezone.utc)
         registration.status = RegistrationStatus.CONFIRMED
@@ -235,9 +402,163 @@ class PaymentService:
             actor_user_id=None,
             after_value={"gateway_payment_id": gateway_payment_id},
         )
-        await self.db.commit()
-        await self.db.refresh(payment)
+        if commit:
+            await self.db.commit()
+            await self.db.refresh(payment)
         return payment
+
+    async def list_webhook_events(self, limit: int = 100) -> list[PaymentWebhookInbox]:
+        result = await self.db.execute(
+            select(PaymentWebhookInbox)
+            .order_by(PaymentWebhookInbox.received_at.desc())
+            .limit(max(1, min(limit, 500)))
+        )
+        return list(result.scalars().all())
+
+    async def reconcile_payment(self, payment_id: uuid.UUID) -> Payment | None:
+        await acquire_advisory_lock(self.db, f"payment_reconciliation:{payment_id}")
+        payment = await self.payments.get_by_id(payment_id)
+        if payment is None:
+            return None
+        payment.reconciliation_attempts += 1
+        payment.last_reconciled_at = datetime.now(timezone.utc)
+        try:
+            snapshot = await asyncio.to_thread(
+                self.gateway.fetch_payment,
+                payment_id=payment.gateway_payment_id,
+                order_id=payment.gateway_order_id,
+            )
+            if snapshot is None:
+                payment.reconciliation_status = "unknown"
+                payment.reconciliation_error = "Provider has not returned a payment state."
+            elif snapshot.order_id != payment.gateway_order_id or snapshot.amount != int(Decimal(payment.amount) * 100):
+                payment.reconciliation_status = "mismatch"
+                payment.reconciliation_error = "Provider payment does not match the local order."
+            elif snapshot.status in {"captured", "authorized", "paid"}:
+                payment = await self._verify_payment(
+                    payment,
+                    snapshot.payment_id,
+                    self.gateway.payment_signature(
+                        order_id=payment.gateway_order_id or "", payment_id=snapshot.payment_id
+                    ),
+                    commit=False,
+                )
+                payment.reconciliation_status = "verified"
+                payment.reconciliation_error = None
+            elif snapshot.status in {"failed", "refunded"}:
+                payment.reconciliation_status = snapshot.status
+                payment.reconciliation_error = None
+                if snapshot.status == "failed":
+                    payment.status = PaymentStatus.FAILED
+            else:
+                payment.reconciliation_status = "pending"
+                payment.reconciliation_error = None
+            await self.db.commit()
+            await self.db.refresh(payment)
+            return payment
+        except Exception as exc:
+            await self.db.rollback()
+            payment = await self.payments.get_by_id(payment_id)
+            if payment is not None:
+                payment.reconciliation_status = "failed"
+                payment.reconciliation_error = str(exc)[:1000]
+                await self.db.commit()
+            raise
+
+    async def reconcile_refund(self, refund_id: uuid.UUID) -> Refund | None:
+        await acquire_advisory_lock(self.db, f"refund_reconciliation:{refund_id}")
+        refund = await self.refunds.get_by_id(refund_id)
+        if refund is None:
+            return None
+        payment = await self.payments.get_by_id(refund.payment_id)
+        if payment is None or not refund.gateway_refund_id:
+            return refund
+        refund.reconciliation_attempts += 1
+        refund.last_reconciled_at = datetime.now(timezone.utc)
+        try:
+            snapshot = await asyncio.to_thread(
+                self.gateway.fetch_refund, refund_id=refund.gateway_refund_id
+            )
+            if snapshot is None:
+                refund.reconciliation_error = "Provider has not returned a refund state."
+            elif snapshot.payment_id != payment.gateway_payment_id or snapshot.amount != int(Decimal(refund.amount) * 100):
+                refund.reconciliation_error = "Provider refund does not match the local refund request."
+            elif snapshot.status in {"processed", "completed"}:
+                refund.status = RefundStatus.PROCESSED
+                refund.processed_at = refund.processed_at or datetime.now(timezone.utc)
+                refund.reconciliation_error = None
+                await self._apply_processed_refund(refund, payment, actor_id=None)
+            elif snapshot.status in {"failed", "cancelled"}:
+                refund.status = RefundStatus.FAILED
+                refund.failure_reason = f"Provider refund status: {snapshot.status}"
+                refund.reconciliation_error = None
+                registration = await self.registrations.get_by_id(payment.registration_id)
+                if registration is not None and registration.status == RegistrationStatus.REFUND_PENDING:
+                    registration.status = RegistrationStatus.REFUND_FAILED
+            await self.db.commit()
+            await self.db.refresh(refund)
+            return refund
+        except Exception as exc:
+            await self.db.rollback()
+            refund = await self.refunds.get_by_id(refund_id)
+            if refund is not None:
+                refund.reconciliation_error = str(exc)[:1000]
+                await self.db.commit()
+            raise
+
+    async def reconcile_stale_payments_once(self, limit: int = 100) -> int:
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=self.settings.payment_reconciliation_stale_seconds
+        )
+        result = await self.db.execute(
+            select(Payment.id)
+            .where(Payment.status == PaymentStatus.INITIATED, Payment.created_at < cutoff)
+            .order_by(Payment.created_at)
+            .limit(max(1, min(limit, self.settings.payment_reconciliation_batch_size)))
+        )
+        payment_ids = [row[0] for row in result.all()]
+        count = 0
+        for payment_id in payment_ids:
+            await self.reconcile_payment(payment_id)
+            count += 1
+        return count
+
+    async def reconcile_stale_refunds_once(self, limit: int = 100) -> int:
+        result = await self.db.execute(
+            select(Refund.id)
+            .where(Refund.status == RefundStatus.PROCESSING)
+            .order_by(Refund.created_at)
+            .limit(max(1, min(limit, self.settings.payment_reconciliation_batch_size)))
+        )
+        count = 0
+        for (refund_id,) in result.all():
+            await self.reconcile_refund(refund_id)
+            count += 1
+        return count
+
+    async def retry_failed_webhooks_once(self, limit: int = 100) -> int:
+        rows = await self.webhook_inbox.list_failed(limit)
+        count = 0
+        for inbox in rows:
+            await acquire_advisory_lock(self.db, f"payment_webhook:{inbox.provider_event_id}")
+            inbox.processing_status = WebhookProcessingStatus.PROCESSING
+            inbox.attempts += 1
+            inbox.failure_reason = None
+            await self.db.commit()
+            try:
+                await self._process_webhook_payload(inbox.payload)
+                inbox.processing_status = WebhookProcessingStatus.PROCESSED
+                inbox.processed_at = datetime.now(timezone.utc)
+                await self.db.commit()
+                count += 1
+            except Exception as exc:
+                await self.db.rollback()
+                inbox = await self.webhook_inbox.get_by_event_id(inbox.provider_event_id)
+                if inbox is not None:
+                    inbox.processing_status = WebhookProcessingStatus.FAILED
+                    inbox.failure_reason = str(exc)[:1000]
+                    await self.db.commit()
+        return count
 
     async def list_refunds(self, event_id: uuid.UUID | None = None) -> list[Refund]:
         """
@@ -249,6 +570,9 @@ class PaymentService:
         if event_id is None:
             return await self.refunds.list_all()
         return await self.refunds.list_for_event(event_id)
+
+    async def page_refunds(self, **filters):
+        return await self.refunds.page_all(**filters)
 
     async def _refunded_amount(self, payment_id: uuid.UUID) -> Decimal:
         result = await self.db.execute(
@@ -266,7 +590,13 @@ class PaymentService:
         return Decimal(result.scalar_one())
 
     async def request_refund(
-        self, *, payment_id: uuid.UUID, actor: User, amount: Decimal | None, reason: str | None
+        self,
+        *,
+        payment_id: uuid.UUID,
+        actor: User,
+        amount: Decimal | None,
+        reason: str | None,
+        commit: bool = True,
     ) -> Refund:
         await acquire_advisory_lock(self.db, f"refund:{payment_id}")
         payment = await self.payments.get_by_id(payment_id)
@@ -281,6 +611,18 @@ class PaymentService:
             raise InvalidRefundStateError("Refund amount cannot exceed the original payment.")
         if await self._refunded_amount(payment.id) + refund_amount > Decimal(payment.amount):
             raise InvalidRefundStateError("Refunds cannot exceed the original payment.")
+        registration = await self.registrations.get_by_id(payment.registration_id)
+        if registration is None:
+            raise InvalidPaymentStateError("Registration not found.")
+        from app.modules.tickets.models import TicketStatus
+        from app.modules.tickets.repository import TicketRepository
+
+        ticket = await TicketRepository(self.db).get_by_registration_id(payment.registration_id)
+        if (
+            registration.status in {RegistrationStatus.CHECKED_IN, RegistrationStatus.COMPLETED}
+            or (ticket is not None and ticket.status == TicketStatus.CHECKED_IN)
+        ) and refund_amount >= Decimal(payment.amount):
+            raise InvalidRefundStateError("A checked-in or completed registration cannot be fully refunded.")
         refund = await self.refunds.create(
             payment_id=payment.id,
             requested_by=actor.id,
@@ -296,8 +638,11 @@ class PaymentService:
             actor_user_id=actor.id,
             after_value={"amount": str(refund_amount)},
         )
-        await self.db.commit()
-        await self.db.refresh(refund)
+        if registration.status != RegistrationStatus.CANCELLED:
+            registration.status = RegistrationStatus.REFUND_PENDING
+        if commit:
+            await self.db.commit()
+            await self.db.refresh(refund)
         return refund
 
     async def approve_refund(self, refund_id: uuid.UUID, actor: User, reason: str | None = None) -> Refund:
@@ -309,6 +654,7 @@ class PaymentService:
         payment = await self.payments.get_by_id(refund.payment_id)
         if payment is None:
             raise PaymentNotFoundError("Payment not found.")
+        await acquire_event_capacity_lock(self.db, payment.event_id)
         await acquire_advisory_lock(self.db, f"refund:{payment.id}")
         await self.db.refresh(payment)
         await self.db.refresh(refund)
@@ -318,28 +664,47 @@ class PaymentService:
             raise InvalidPaymentStateError("Only verified payments can be refunded.")
         if payment.gateway_payment_id is None:
             raise InvalidRefundStateError("Verified payment is missing the gateway payment id.")
-        refund.status = RefundStatus.PROCESSING
-        refund.approved_by = actor.id
-        refund.approved_at = datetime.now(timezone.utc)
-        gateway_refund = await asyncio.to_thread(
-            self.gateway.initiate_refund,
-            payment_id=payment.gateway_payment_id,
-            amount=int(Decimal(refund.amount) * 100),
-        )
-        refund.gateway_refund_id = gateway_refund.refund_id
-        refund.status = RefundStatus.PROCESSED
-        refund.processed_at = datetime.now(timezone.utc)
-        payment.status = (
-            PaymentStatus.REFUNDED
-            if await self._refunded_amount(payment.id) >= Decimal(payment.amount)
-            else PaymentStatus.VERIFIED
-        )
+        registration = await self.registrations.get_by_id(payment.registration_id)
+        if registration is None:
+            raise InvalidPaymentStateError("Registration not found.")
         from app.modules.tickets.models import TicketStatus
         from app.modules.tickets.repository import TicketRepository
 
         ticket = await TicketRepository(self.db).get_by_registration_id(payment.registration_id)
-        if payment.status == PaymentStatus.REFUNDED and ticket is not None and ticket.status == TicketStatus.ISSUED:
-            ticket.status = TicketStatus.CANCELLED
+        if (
+            registration.status in {RegistrationStatus.CHECKED_IN, RegistrationStatus.COMPLETED}
+            or (ticket is not None and ticket.status == TicketStatus.CHECKED_IN)
+        ) and Decimal(refund.amount) >= Decimal(payment.amount):
+            raise InvalidRefundStateError("A checked-in or completed registration cannot be refunded.")
+        refund.status = RefundStatus.PROCESSING
+        refund.approved_by = actor.id
+        refund.approved_at = datetime.now(timezone.utc)
+        try:
+            gateway_refund = await asyncio.to_thread(
+                self.gateway.initiate_refund,
+                payment_id=payment.gateway_payment_id,
+                amount=int(Decimal(refund.amount) * 100),
+            )
+        except Exception as exc:
+            refund.status = RefundStatus.FAILED
+            refund.failure_reason = str(exc)[:500]
+            if registration.status == RegistrationStatus.REFUND_PENDING:
+                registration.status = RegistrationStatus.REFUND_FAILED
+            await write_audit_log(
+                self.db,
+                entity_type="refund",
+                entity_id=refund.id,
+                action="failed",
+                actor_user_id=actor.id,
+                after_value={"reason": refund.failure_reason},
+            )
+            await self.db.commit()
+            await self.db.refresh(refund)
+            return refund
+        refund.gateway_refund_id = gateway_refund.refund_id
+        refund.status = RefundStatus.PROCESSED
+        refund.processed_at = datetime.now(timezone.utc)
+        await self._apply_processed_refund(refund, payment, actor_id=actor.id)
         await write_audit_log(
             self.db,
             entity_type="refund",

@@ -146,6 +146,11 @@ class StaffService:
             raise PermissionDeniedError("You don't have permission to view staff for this event.")
         return await self.assignments.list_for_event(event_id)
 
+    async def page_assignments(self, *, event_id: uuid.UUID, actor: User, page=1, page_size=25):
+        if not await self._can_manage_event(actor, event_id):
+            raise PermissionDeniedError("You don't have permission to view staff for this event.")
+        return await self.assignments.page_for_event(event_id, page=page, page_size=page_size)
+
     async def list_my_assignments(self, actor: User) -> list[StaffAssignment]:
         """
         Closes a real gap: the only way to see StaffAssignment data was

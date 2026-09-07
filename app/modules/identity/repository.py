@@ -4,7 +4,7 @@ Business rules (OTP validity, verification limits, etc.) live in service.py.
 """
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.identity.models import IdentityDocument, User
@@ -22,6 +22,11 @@ class UserRepository:
     async def list_all(self) -> list[User]:
         result = await self.db.execute(select(User).order_by(User.created_at.desc()))
         return list(result.scalars().all())
+
+    async def page_all(self, *, page: int, page_size: int):
+        total = await self.db.scalar(select(func.count(User.id))) or 0
+        result = await self.db.execute(select(User).order_by(User.created_at.desc(), User.id.desc()).offset((page - 1) * page_size).limit(page_size))
+        return list(result.scalars().all()), total
 
     async def get_by_mobile_number(self, mobile_number: str) -> User | None:
         normalized = normalize_mobile_number(mobile_number)

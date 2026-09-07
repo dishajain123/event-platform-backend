@@ -1,7 +1,7 @@
 """Data access for staff assignments and assignment history."""
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.staff.models import StaffAssignment, StaffAssignmentHistory, StaffAssignmentStatus
@@ -25,6 +25,11 @@ class StaffAssignmentRepository:
             select(StaffAssignment).where(StaffAssignment.event_id == event_id)
         )
         return list(result.scalars().all())
+
+    async def page_for_event(self, event_id: uuid.UUID, *, page=1, page_size=25):
+        total = await self.db.scalar(select(func.count(StaffAssignment.id)).where(StaffAssignment.event_id == event_id)) or 0
+        result = await self.db.execute(select(StaffAssignment).where(StaffAssignment.event_id == event_id).order_by(StaffAssignment.created_at.desc(), StaffAssignment.id.desc()).offset((page - 1) * page_size).limit(page_size))
+        return list(result.scalars().all()), total
 
     async def list_for_invitee_mobile(self, mobile_number: str) -> list[StaffAssignment]:
         """

@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -83,6 +83,23 @@ class EventRepository:
             stmt = stmt.where(Event.sub_category_id == sub_category_id)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
+
+    async def page_all(self, *, include_all_statuses: bool, main_category_id=None, sub_category_id=None, search=None, status=None, page=1, page_size=25):
+        filters = []
+        if not include_all_statuses:
+            filters.append(Event.status.in_([EventStatus.PUBLISHED, EventStatus.REGISTRATION_OPEN, EventStatus.REGISTRATION_CLOSED, EventStatus.LIVE, EventStatus.COMPLETED]))
+        if main_category_id is not None:
+            filters.append(Event.main_category_id == main_category_id)
+        if sub_category_id is not None:
+            filters.append(Event.sub_category_id == sub_category_id)
+        if status is not None:
+            filters.append(Event.status == status)
+        if search:
+            filters.append(Event.name.ilike(f"%{search.strip()}%"))
+        total = await self.db.scalar(select(func.count(Event.id)).where(*filters)) or 0
+        stmt = select(Event).options(selectinload(Event.main_category), selectinload(Event.sub_category), selectinload(Event.organizer), selectinload(Event.configuration)).where(*filters)
+        result = await self.db.execute(stmt.order_by(Event.created_at.desc(), Event.id.desc()).offset((page - 1) * page_size).limit(page_size))
+        return list(result.scalars().all()), total
 
 
 class VenueRepository:

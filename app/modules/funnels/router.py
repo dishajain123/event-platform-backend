@@ -12,6 +12,7 @@ from app.modules.funnels.schemas import CompetitionStageIn, CompetitionStageOut,
 from app.modules.funnels.service import FunnelService
 from app.modules.identity.models import User
 from app.modules.rbac.models import RoleName
+from app.core.pagination import Page
 
 router = APIRouter(tags=["funnels"])
 
@@ -51,9 +52,11 @@ async def create_stage(
     return await service.create_stage(uuid.UUID(event_id), **payload.model_dump())
 
 
-@router.get("/entries/public", response_model=list[EntryOut])
+@router.get("/entries/public", response_model=list[EntryOut] | Page[EntryOut])
 async def list_public_vote_entries(
     stage_id: str = Query(...),
+    page: int | None = Query(None, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
     current_user: User | None = Depends(get_current_user_optional),
     service: FunnelService = Depends(get_funnel_service),
 ):
@@ -63,12 +66,24 @@ async def list_public_vote_entries(
     no way whatsoever to discover which entries exist to vote for. Only
     ever returns entries for a stage whose stage_type is PUBLIC_VOTE.
     """
-    return await service.list_public_vote_entries(uuid.UUID(stage_id))
+    if not isinstance(page, int):
+        page = None
+    if not isinstance(page_size, int):
+        page_size = 25
+    if page is None:
+        return await service.list_public_vote_entries(uuid.UUID(stage_id))
+    stage = await service._get_stage_or_raise(uuid.UUID(stage_id))
+    if stage.stage_type != "public_vote":
+        return await service.list_public_vote_entries(uuid.UUID(stage_id))
+    items, total = await service.page_entries(stage.id, page=page, page_size=page_size)
+    return Page(items=items, total=total, page=page, page_size=page_size)
 
 
-@router.get("/entries", response_model=list[EntryOut])
+@router.get("/entries", response_model=list[EntryOut] | Page[EntryOut])
 async def list_entries(
     stage_id: str = Query(...),
+    page: int | None = Query(None, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     service: FunnelService = Depends(get_funnel_service),
@@ -85,7 +100,12 @@ async def list_entries(
     )
     if not is_allowed:
         raise PermissionDeniedError("You don't have permission to view entries for this stage.")
-    return await service.list_entries(stage.id)
+    if not isinstance(page, int):
+        page = None
+    if page is None:
+        return await service.list_entries(stage.id)
+    items, total = await service.page_entries(stage.id, page=page, page_size=page_size)
+    return Page(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.post("/entries/{entry_id}/advance", response_model=EntryOut)

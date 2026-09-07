@@ -11,6 +11,7 @@ import asyncio
 import io
 import secrets
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import httpx
 from minio import Minio
@@ -79,7 +80,14 @@ class ObjectStorageClient:
     ) -> StoredObject:
         storage_key = self.build_media_key(event_id=event_id, title=title, media_type=media_type)
 
+        if source_url:
+            parsed = urlparse(source_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("Media source URL must be an absolute HTTP(S) URL.")
+
         if not self._has_minio():
+            if self.settings.environment.lower() in {"production", "prod"} and not self.settings.allow_local_storage_fallback:
+                raise RuntimeError("Object storage is required in production.")
             public_url = source_url or f"https://storage.local/{storage_key}"
             return StoredObject(storage_key=storage_key, public_url=public_url)
 
@@ -90,7 +98,12 @@ class ObjectStorageClient:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(source_url)
                 response.raise_for_status()
+                content_length = int(response.headers.get("content-length", "0") or 0)
+                if content_length > self.settings.media_max_bytes:
+                    raise ValueError("Media exceeds the configured size limit.")
                 content = response.content
+                if len(content) > self.settings.media_max_bytes:
+                    raise ValueError("Media exceeds the configured size limit.")
                 content_type = response.headers.get("content-type", content_type)
 
         client = self._get_client()

@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.volunteers.models import VolunteerApplication, VolunteerApplicationType
 
@@ -51,3 +51,31 @@ class VolunteerRepository:
             )
         result = await self.db.execute(stmt.order_by(VolunteerApplication.created_at.desc()))
         return list(result.scalars().all())
+
+    async def page_for_events(self, event_ids, *, page: int, page_size: int, status=None, search=None, application_type=None):
+        if event_ids is not None and not event_ids:
+            return [], 0
+        filters = []
+        if event_ids is not None:
+            filters.append(VolunteerApplication.event_id.in_(event_ids))
+        if status is not None:
+            filters.append(VolunteerApplication.status == status)
+        if application_type is not None:
+            filters.append(VolunteerApplication.application_type == application_type)
+        if search:
+            term = f"%{search.strip()}%"
+            filters.append(
+                VolunteerApplication.full_name.ilike(term)
+                | VolunteerApplication.phone.ilike(term)
+                | VolunteerApplication.email.ilike(term)
+                | VolunteerApplication.skills_experience.ilike(term)
+            )
+        total = await self.db.scalar(select(func.count(VolunteerApplication.id)).where(*filters)) or 0
+        result = await self.db.execute(
+            select(VolunteerApplication)
+            .where(*filters)
+            .order_by(VolunteerApplication.created_at.desc(), VolunteerApplication.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        return list(result.scalars().all()), total

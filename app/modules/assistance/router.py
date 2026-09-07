@@ -9,6 +9,7 @@ from app.dependencies import get_current_user
 from app.modules.assistance.schemas import AssistanceRequestCreateIn, AssistanceRequestDecideIn, AssistanceRequestOut
 from app.modules.assistance.service import AssistanceService
 from app.modules.identity.models import User
+from app.core.pagination import Page
 
 router = APIRouter(prefix="/assistance-requests", tags=["assistance"])
 
@@ -36,15 +37,24 @@ async def create_assistance_request(
 
 @router.get(
     "",
-    response_model=list[AssistanceRequestOut],
+    response_model=list[AssistanceRequestOut] | Page[AssistanceRequestOut],
 )
 async def list_assistance_requests(
     event_id: str = Query(...),
+    page: int | None = Query(None, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     service: AssistanceService = Depends(get_assistance_service),
 ):
-    requests = await service.list_requests(event_id=uuid.UUID(event_id), actor=current_user)
-    return [AssistanceRequestOut.model_validate(request) for request in requests]
+    if not isinstance(page, int):
+        page = None
+    if not isinstance(page_size, int):
+        page_size = 25
+    if page is None:
+        requests = await service.list_requests(event_id=uuid.UUID(event_id), actor=current_user)
+        return [AssistanceRequestOut.model_validate(request) for request in requests]
+    requests, total = await service.page_requests(event_id=uuid.UUID(event_id), actor=current_user, page=page, page_size=page_size)
+    return Page(items=[AssistanceRequestOut.model_validate(request) for request in requests], total=total, page=page, page_size=page_size)
 
 
 @router.get("/mine", response_model=list[AssistanceRequestOut])

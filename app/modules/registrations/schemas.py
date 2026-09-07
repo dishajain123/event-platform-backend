@@ -5,6 +5,7 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.registrations.models import RegistrationStatus
+from app.modules.payments.models import PaymentStatus, RefundStatus
 
 
 class RegistrationParticipantIn(BaseModel):
@@ -40,6 +41,10 @@ class RegistrationDecisionIn(BaseModel):
     reason: str | None = None
 
 
+class RegistrationCancellationIn(BaseModel):
+    reason: str | None = None
+
+
 class RegistrationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -56,6 +61,13 @@ class RegistrationOut(BaseModel):
     rejection_reason: str | None
     checked_in_at: datetime | None
     completed_at: datetime | None
+    cancellation_deadline_at: datetime | None
+    cancellation_requested_at: datetime | None
+    cancelled_at: datetime | None
+    cancelled_by: uuid.UUID | None
+    cancellation_reason: str | None
+    payment_status: PaymentStatus | None
+    refund_status: RefundStatus | None
     created_at: datetime
     updated_at: datetime
     participants: list[RegistrationParticipantOut] = Field(default_factory=list)

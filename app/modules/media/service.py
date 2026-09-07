@@ -70,6 +70,12 @@ class MediaService:
         # (see the repository fix), so no manual patch-in is needed here.
         return sorted(items, key=lambda item: (item.highlight is None, item.sort_order, item.created_at))
 
+    async def page_event_media(self, event_id: uuid.UUID, actor: User | None = None, *, page=1, page_size=25):
+        await self._get_event_or_raise(event_id)
+        can_see_drafts = actor is not None and await self._can_manage_media(actor, event_id)
+        items, total = await self.media.page_for_event(event_id, published_only=not can_see_drafts, page=page, page_size=page_size)
+        return items, total
+
     async def upload_media(self, event_id: uuid.UUID, actor: User, payload: MediaUploadIn) -> Media:
         await self._get_event_or_raise(event_id)
         if not await self._can_manage_media(actor, event_id):

@@ -1,7 +1,7 @@
 """Data access for media and highlights."""
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -35,6 +35,14 @@ class MediaRepository:
             select(Media).options(selectinload(Media.highlight)).where(Media.event_id == event_id)
         )
         return list(result.scalars().all())
+
+    async def page_for_event(self, event_id: uuid.UUID, *, published_only: bool, page=1, page_size=25):
+        filters = [Media.event_id == event_id]
+        if published_only:
+            filters.append(Media.is_published.is_(True))
+        total = await self.db.scalar(select(func.count(Media.id)).where(*filters)) or 0
+        result = await self.db.execute(select(Media).options(selectinload(Media.highlight)).where(*filters).order_by(Media.sort_order.asc(), Media.created_at.asc(), Media.id.asc()).offset((page - 1) * page_size).limit(page_size))
+        return list(result.scalars().all()), total
 
     async def list_published_for_event(self, event_id: uuid.UUID) -> list[Media]:
         result = await self.db.execute(

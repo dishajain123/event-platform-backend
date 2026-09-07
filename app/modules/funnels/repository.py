@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.funnels.models import CompetitionStage, Entry, StageDecision
@@ -39,6 +39,11 @@ class FunnelRepository:
     async def list_entries_for_stage(self, stage_id: uuid.UUID) -> list[Entry]:
         result = await self.db.execute(select(Entry).where(Entry.current_stage_id == stage_id))
         return list(result.scalars().all())
+
+    async def page_entries_for_stage(self, stage_id: uuid.UUID, *, page=1, page_size=25):
+        total = await self.db.scalar(select(func.count(Entry.id)).where(Entry.current_stage_id == stage_id)) or 0
+        result = await self.db.execute(select(Entry).where(Entry.current_stage_id == stage_id).order_by(Entry.created_at.desc(), Entry.id.desc()).offset((page - 1) * page_size).limit(page_size))
+        return list(result.scalars().all()), total
 
     async def get_next_stage(self, event_id: uuid.UUID, order_index: int) -> CompetitionStage | None:
         result = await self.db.execute(

@@ -5,7 +5,7 @@ console) — see the include_all_statuses query param, gated by role.
 """
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import user_has_global_role
@@ -23,9 +23,11 @@ from app.modules.events.schemas import (
     VenueIn,
     VenueOut,
 )
+from app.modules.events.models import EventStatus
 from app.modules.events.service import EventService
 from app.modules.identity.models import User
 from app.modules.rbac.models import RoleName
+from app.core.pagination import Page
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -34,14 +36,22 @@ def get_event_service(db: AsyncSession = Depends(get_db)) -> EventService:
     return EventService(db)
 
 
-@router.get("", response_model=list[EventOut])
+@router.get("", response_model=list[EventOut] | Page[EventOut])
 async def list_events(
     main_category_id: uuid.UUID | None = None,
     sub_category_id: uuid.UUID | None = None,
+    page: int | None = Query(None, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    search: str | None = None,
+    event_status: EventStatus | None = Query(None, alias="status"),
     current_user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
     service: EventService = Depends(get_event_service),
 ):
+    if not isinstance(page, int):
+        page = None
+    if not isinstance(page_size, int):
+        page_size = 25
     """
     Called by: both. Mobile users see only PUBLISHED-or-later events;
     console users with Operations Admin/Super Admin see every status.
@@ -49,12 +59,15 @@ async def list_events(
     is_console_admin = current_user is not None and await user_has_global_role(
         db, current_user.id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN}
     )
-    events = await service.list_events(
+    if page is None:
+        events = await service.list_events(
         include_all_statuses=is_console_admin,
         main_category_id=main_category_id,
         sub_category_id=sub_category_id,
-    )
-    return [await service.to_response(event) for event in events]
+        )
+        return [await service.to_response(event) for event in events]
+    events, total = await service.page_events(include_all_statuses=is_console_admin, main_category_id=main_category_id, sub_category_id=sub_category_id, search=search, status=event_status, page=page, page_size=page_size)
+    return Page(items=[await service.to_response(event) for event in events], total=total, page=page, page_size=page_size)
 
 
 @router.get("/{event_id}", response_model=EventOut)

@@ -8,7 +8,7 @@ Fixes a real gap found while verifying the Console's Day-of Operations
 page live: tickets.payment_id was NOT NULL, but ticket issuance was
 only ever wired to the payment webhook handler — meaning a free
 (no-fee) event's registrations, which never create a Payment row at
-all, could never receive a ticket. Check-in via QR scan was therefore
+all, could never receive a ticket. Check-in via barcode scan was therefore
 completely impossible for any free event. This migration makes the
 column nullable so a ticket can be issued directly for a free,
 approved registration; app/modules/tickets/service.py's

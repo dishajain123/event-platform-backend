@@ -1,7 +1,7 @@
 """Data access for assistance requests."""
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.assistance.models import AssistanceRequest
@@ -25,6 +25,11 @@ class AssistanceRepository:
             select(AssistanceRequest).where(AssistanceRequest.event_id == event_id)
         )
         return list(result.scalars().all())
+
+    async def page_for_event(self, event_id: uuid.UUID, *, page=1, page_size=25):
+        total = await self.db.scalar(select(func.count(AssistanceRequest.id)).where(AssistanceRequest.event_id == event_id)) or 0
+        result = await self.db.execute(select(AssistanceRequest).where(AssistanceRequest.event_id == event_id).order_by(AssistanceRequest.created_at.desc(), AssistanceRequest.id.desc()).offset((page - 1) * page_size).limit(page_size))
+        return list(result.scalars().all()), total
 
     async def get_by_registration_id(self, registration_id: uuid.UUID) -> AssistanceRequest | None:
         result = await self.db.execute(

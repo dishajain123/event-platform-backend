@@ -14,8 +14,9 @@ from app.modules.events.service import EventService
 from app.modules.identity.models import User
 from app.modules.payments.service import PaymentService
 from app.modules.rbac.models import Role, RoleAssignment, RoleName
+from app.modules.registrations.models import RegistrationStatus
 from app.modules.registrations.service import RegistrationService
-from app.modules.tickets.exceptions import DuplicateCheckInError
+from app.modules.tickets.exceptions import DuplicateCheckInError, InvalidTicketStateError
 from app.modules.tickets.models import CheckInSource, TicketStatus
 from app.modules.tickets.schemas import OfflineCheckInIn
 from app.modules.tickets.service import TicketService
@@ -104,8 +105,8 @@ async def test_offline_checkin_sync_creates_checkin_and_blocks_duplicate_scan(db
     offline_scan = OfflineCheckInIn(
         venue_id=None,
         offline_batch_id="batch-1",
-        scan_payload=ticket.qr_payload,
-        qr_signature=ticket.qr_signature,
+        scan_payload=ticket.barcode_payload,
+        barcode_signature=ticket.barcode_signature,
     )
     checkins = await ticket_service.sync_offline_checkins(context["staff"], [offline_scan])
 
@@ -116,6 +117,10 @@ async def test_offline_checkin_sync_creates_checkin_and_blocks_duplicate_scan(db
     refreshed_ticket = await ticket_service.tickets.get_by_registration_id(context["registration"].id)
     assert refreshed_ticket is not None
     assert refreshed_ticket.status == TicketStatus.CHECKED_IN
+    refreshed_registration = await RegistrationService(db_session).get_registration_or_raise(
+        context["registration"].id
+    )
+    assert refreshed_registration.status == RegistrationStatus.CHECKED_IN
 
     with pytest.raises(DuplicateCheckInError):
         await ticket_service.check_in(refreshed_ticket.id, context["staff"], source=CheckInSource.ONLINE)
@@ -125,8 +130,8 @@ async def test_offline_checkin_sync_creates_checkin_and_blocks_duplicate_scan(db
 async def test_online_check_in_can_resolve_a_scanned_ticket_by_payload(db_session):
     """
     Regression test for a real gap found while building the mobile app's
-    QR scanner: POST /{ticket_id}/check-in requires the ticket's real
-    UUID, but a scanned QR's qr_payload only ever contains
+    barcode scanner: POST /{ticket_id}/check-in requires the ticket's real
+    UUID, but a scanned barcode payload only ever contains
     "{ticket_code}:{registration_id}:{payment_id_or_free}" — never the
     ticket's UUID. The offline sync path already resolved this
     internally; the online path (Staff Mode's single highest-frequency
@@ -136,7 +141,7 @@ async def test_online_check_in_can_resolve_a_scanned_ticket_by_payload(db_sessio
     service = TicketService(db_session)
     ticket = ctx["ticket"]
 
-    resolved = await service.resolve_by_scan_payload(ticket.qr_payload, ticket.qr_signature)
+    resolved = await service.resolve_by_scan_payload(ticket.barcode_payload, ticket.barcode_signature)
     assert resolved.id == ticket.id
 
     # The resolved ticket's real UUID is what actually unlocks check-in.
@@ -144,16 +149,38 @@ async def test_online_check_in_can_resolve_a_scanned_ticket_by_payload(db_sessio
     assert check_in.ticket_id == ticket.id
 
     # A tampered/wrong signature is correctly rejected, not silently resolved.
-    from app.modules.tickets.exceptions import InvalidTicketStateError
-
     with pytest.raises(InvalidTicketStateError):
-        await service.resolve_by_scan_payload(ticket.qr_payload, "not-the-real-signature")
+        await service.resolve_by_scan_payload(ticket.barcode_payload, "not-the-real-signature")
+
+
+@pytest.mark.asyncio
+async def test_barcode_payload_cannot_be_rebound_to_another_event(db_session):
+    ctx = await _make_ticket_context(db_session)
+    service = TicketService(db_session)
+    ticket = ctx["ticket"]
+    assert ticket is not None
+
+    rebound_payload = ticket.barcode_payload.replace(str(ctx["event"].id), str(ctx["registration"].id), 1)
+    rebound_signature = service._sign_payload(rebound_payload)
+
+    with pytest.raises(InvalidTicketStateError, match="different event"):
+        await service.resolve_by_scan_payload(rebound_payload, rebound_signature)
+
+
+@pytest.mark.asyncio
+async def test_expired_event_ticket_cannot_be_checked_in(db_session):
+    ctx = await _make_ticket_context(db_session)
+    ctx["event"].end_date = datetime.now(timezone.utc) - timedelta(minutes=1)
+    await db_session.flush()
+
+    with pytest.raises(InvalidTicketStateError, match="expired"):
+        await TicketService(db_session).check_in(ctx["ticket"].id, ctx["staff"])
 
 
 @pytest.mark.asyncio
 async def test_manual_ticket_code_lookup_works_without_a_signature(db_session):
     """
-    The manual-entry fallback for a damaged/unreadable QR (Section 8,
+    The manual-entry fallback for a damaged/unreadable barcode,
     Phase 5) — a human can't type a cryptographic signature, so this
     path deliberately looks up by ticket_code alone, relying on the
     caller already being an authenticated, permission-checked staff

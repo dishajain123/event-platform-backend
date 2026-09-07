@@ -187,6 +187,8 @@ class EventService:
             "sub_category_id": str(event.sub_category_id) if event.sub_category_id else None,
         }
         legacy_category = fields.pop("category", None)
+        communication_fields = {"name", "description", "start_date", "end_date"}
+        event_changed = bool(communication_fields.intersection(fields))
         if "organizer_user_id" in fields and fields["organizer_user_id"] is not None:
             organizer = await self.users.get_by_id(fields["organizer_user_id"])
             if organizer is None:
@@ -217,6 +219,12 @@ class EventService:
             after_value={k: (str(v) if isinstance(v, uuid.UUID) else v) for k, v in fields.items() if v is not None},
         )
         await self.db.commit()
+        if event_changed:
+            from app.modules.notifications.service import NotificationService
+
+            await NotificationService(self.db).queue_event_change(
+                event.id, reason="The event schedule or details were updated."
+            )
         return await self.get_event_or_raise(event.id)
 
     async def transition_status(
@@ -241,6 +249,11 @@ class EventService:
             after_value={"status": new_status.value},
         )
         await self.db.commit()
+        from app.modules.notifications.service import NotificationService
+
+        await NotificationService(self.db).queue_event_change(
+            event.id, reason=f"The event status is now {new_status.value.replace('_', ' ')}."
+        )
         return await self.get_event_or_raise(event.id)
 
     async def publish(self, event_id: uuid.UUID, actor_user_id: uuid.UUID) -> Event:
@@ -271,6 +284,12 @@ class EventService:
         for event in events:
             await self._synchronize_registration_state(event)
         return events
+
+    async def page_events(self, *, include_all_statuses, main_category_id=None, sub_category_id=None, search=None, status=None, page=1, page_size=25):
+        events, total = await self.events.page_all(include_all_statuses=include_all_statuses, main_category_id=main_category_id, sub_category_id=sub_category_id, search=search, status=status, page=page, page_size=page_size)
+        for event in events:
+            await self._synchronize_registration_state(event)
+        return events, total
 
     async def to_response(self, event: Event):
         """Build an EventOut with live capacity/deadline metrics."""

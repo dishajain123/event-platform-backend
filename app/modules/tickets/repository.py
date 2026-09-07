@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.tickets.models import CheckIn, Ticket
@@ -58,3 +58,15 @@ class CheckInRepository:
             query = query.where(CheckIn.venue_id == venue_id)
         result = await self.db.execute(query)
         return list(result.scalars().all())
+
+    async def page_for_event(self, event_id: uuid.UUID, venue_id: uuid.UUID | None, *, page: int, page_size: int):
+        filters = [CheckIn.event_id == event_id]
+        if venue_id is not None:
+            filters.append(CheckIn.venue_id == venue_id)
+        total = await self.db.scalar(select(func.count(CheckIn.id)).where(*filters)) or 0
+        result = await self.db.execute(
+            select(CheckIn).where(*filters)
+            .order_by(CheckIn.created_at.desc(), CheckIn.id.desc())
+            .offset((page - 1) * page_size).limit(page_size)
+        )
+        return list(result.scalars().all()), total

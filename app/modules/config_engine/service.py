@@ -20,6 +20,7 @@ from app.modules.config_engine.registration_state import (
     RegistrationAvailability,
     calculate_registration_availability,
     parse_registration_end_at,
+    parse_cancellation_deadline_at,
 )
 from app.modules.events.repository import EventRepository
 from app.modules.registrations.repository import RegistrationRepository
@@ -144,9 +145,14 @@ class ConfigEngineService:
 
     async def upsert_configuration(self, event_id: uuid.UUID, **fields) -> EventConfiguration:
         registration_end_at = fields.pop("registration_end_at", None)
+        cancellation_deadline_at = fields.pop("cancellation_deadline_at", None)
         if registration_end_at is not None:
             details = dict(fields.get("details") or {})
             details["registration_end_at"] = registration_end_at.isoformat()
+            fields["details"] = details
+        if cancellation_deadline_at is not None:
+            details = dict(fields.get("details") or {})
+            details["cancellation_deadline_at"] = cancellation_deadline_at.isoformat()
             fields["details"] = details
         config = await self.configurations.upsert(event_id, **fields)
         await self.db.commit()
@@ -161,6 +167,7 @@ class ConfigEngineService:
         event = await self.events.get_by_id(event_id)
         registered_count = await self.registrations.count_active_for_event(event_id)
         registration_end_at = parse_registration_end_at(config.details)
+        cancellation_deadline_at = parse_cancellation_deadline_at(config.details)
         availability = calculate_registration_availability(
             event_status=event.status if event else None,
             capacity=config.capacity,
@@ -173,6 +180,7 @@ class ConfigEngineService:
         return response.model_copy(
             update={
                 "registration_end_at": registration_end_at,
+                "cancellation_deadline_at": cancellation_deadline_at,
                 "registered_count": registered_count,
                 "available_capacity": (
                     max(config.capacity - registered_count, 0)

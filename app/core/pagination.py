@@ -1,6 +1,10 @@
 """Shared pagination query params, reused by every module's list endpoints."""
 from fastapi import Query
+from typing import Generic, TypeVar
+
 from pydantic import BaseModel
+
+T = TypeVar("T")
 
 
 class PageParams(BaseModel):
@@ -10,3 +14,10 @@ class PageParams(BaseModel):
 
 def pagination_params(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0)) -> PageParams:
     return PageParams(limit=limit, offset=offset)
+
+
+class Page(BaseModel, Generic[T]):
+    items: list[T]
+    total: int
+    page: int
+    page_size: int

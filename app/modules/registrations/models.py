@@ -20,6 +20,8 @@ class RegistrationStatus(StrEnum):
     SUBMITTED = "submitted"
     PENDING_VERIFICATION = "pending_verification"
     PENDING_PAYMENT = "pending_payment"
+    REFUND_PENDING = "refund_pending"
+    REFUND_FAILED = "refund_failed"
     APPROVED = "approved"
     CONFIRMED = "confirmed"
     CHECKED_IN = "checked_in"
@@ -37,6 +39,8 @@ ACTIVE_REGISTRATION_STATUSES = {
     RegistrationStatus.CONFIRMED,
     RegistrationStatus.CHECKED_IN,
     RegistrationStatus.COMPLETED,
+    RegistrationStatus.REFUND_PENDING,
+    RegistrationStatus.REFUND_FAILED,
 }
 
 TERMINAL_REGISTRATION_STATUSES = {
@@ -77,10 +81,28 @@ class Registration(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     rejection_reason: Mapped[str | None] = mapped_column(Text, default=None)
     checked_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    cancellation_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    cancellation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    cancelled_by: Mapped[uuid.UUID | None] = mapped_column(UUIDType, ForeignKey("users.id"), default=None)
+    cancellation_reason: Mapped[str | None] = mapped_column(Text, default=None)
 
     participants: Mapped[list["RegistrationParticipant"]] = relationship(
         back_populates="registration", cascade="all, delete-orphan"
     )
+    payment: Mapped["Payment | None"] = relationship(
+        "Payment", back_populates="registration", uselist=False
+    )
+
+    @property
+    def payment_status(self):
+        return self.payment.status if self.payment is not None else None
+
+    @property
+    def refund_status(self):
+        if self.payment is None or not self.payment.refunds:
+            return None
+        return max(self.payment.refunds, key=lambda refund: refund.created_at).status
 
 
 class RegistrationParticipant(Base, UUIDPrimaryKeyMixin, TimestampMixin):

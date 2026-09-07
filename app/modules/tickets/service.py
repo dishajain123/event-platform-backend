@@ -1,5 +1,5 @@
 """
-QR ticket issuance, verification, and check-in handling.
+Signed Code 128 ticket issuance, verification, and check-in handling.
 """
 import hashlib
 import hmac
@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.core.audit import write_audit_log
 from app.core.permissions import user_has_scoped_role
 from app.modules.identity.models import User
+from app.modules.events.models import Event
 from app.modules.payments.models import Payment, PaymentStatus
 from app.modules.registrations.models import RegistrationStatus
 from app.modules.registrations.repository import RegistrationRepository
@@ -34,7 +35,7 @@ class TicketService:
 
     def _sign_payload(self, payload: str) -> str:
         return hmac.new(
-            self.settings.ticket_qr_secret.encode(), payload.encode(), hashlib.sha256
+            self.settings.ticket_barcode_secret.encode(), payload.encode(), hashlib.sha256
         ).hexdigest()
 
     async def _create_ticket(
@@ -57,7 +58,7 @@ class TicketService:
         if existing is not None:
             return existing
         ticket_code = f"TKT-{secrets.token_hex(8)}"
-        payload = f"{ticket_code}:{registration_id}:{payment_id or 'free'}"
+        payload = f"{ticket_code}:{event_id}:{registration_id}:{payment_id or 'free'}"
         signature = self._sign_payload(payload)
         ticket = await self.tickets.create(
             event_id=event_id,
@@ -65,8 +66,8 @@ class TicketService:
             payment_id=payment_id,
             user_id=user_id,
             ticket_code=ticket_code,
-            qr_payload=payload,
-            qr_signature=signature,
+            barcode_payload=payload,
+            barcode_signature=signature,
             status=TicketStatus.ISSUED,
             issued_at=datetime.now(timezone.utc),
         )
@@ -109,6 +110,9 @@ class TicketService:
     async def list_my_tickets(self, user: User) -> list[Ticket]:
         return await self.tickets.list_for_user(user.id)
 
+    async def page_checkins(self, event_id, venue_id, *, page=1, page_size=25):
+        return await self.checkins.page_for_event(event_id, venue_id, page=page, page_size=page_size)
+
     async def get_ticket_or_raise(self, ticket_id: uuid.UUID) -> Ticket:
         ticket = await self.tickets.get_by_id(ticket_id)
         if ticket is None:
@@ -136,39 +140,34 @@ class TicketService:
             allow_global_roles={RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
         )
 
-    async def verify_qr_payload(self, payload: str, signature: str) -> bool:
+    async def verify_barcode_payload(self, payload: str, signature: str) -> bool:
         return hmac.compare_digest(self._sign_payload(payload), signature)
 
-    async def resolve_by_scan_payload(self, scan_payload: str, qr_signature: str) -> Ticket:
+    async def resolve_by_scan_payload(self, scan_payload: str, barcode_signature: str) -> Ticket:
         """
-        BUG FIX: found while building the mobile app's QR scanner —
-        POST /tickets/{ticket_id}/check-in requires the ticket's real
-        UUID in the URL, but a scanned QR's `qr_payload` only ever
-        contains "{ticket_code}:{registration_id}:{payment_id_or_free}"
-        (see _create_ticket) — never the ticket's UUID `id`. The offline
-        sync path (sync_offline_checkins, below) already had the full
-        resolution logic (verify signature, split out ticket_code, look
-        it up) inline, but the ONLINE path — described as Staff Mode's
-        single highest-frequency action — had no equivalent, meaning a
-        client scanning a QR code had no way to get the ticket_id
-        POST .../check-in requires. This extracts that existing logic
-        into its own reusable method so both paths share one
-        implementation, and exposes it as GET /tickets/resolve for the
-        online scanner to call immediately after every scan.
+        The scanner sends a signed barcode value. The ticket UUID is not
+        embedded in that value, so the backend resolves it before check-in.
         """
-        if not await self.verify_qr_payload(scan_payload, qr_signature):
-            raise InvalidTicketStateError("Invalid or tampered QR code.")
-        ticket_code = scan_payload.split(":", 1)[0]
+        if not await self.verify_barcode_payload(scan_payload, barcode_signature):
+            raise InvalidTicketStateError("Invalid or tampered barcode.")
+        parts = scan_payload.split(":")
+        ticket_code = parts[0]
         ticket = await self.tickets.get_by_code(ticket_code)
         if ticket is None:
             raise TicketNotFoundError("Ticket not found.")
+        # New tickets carry their event ID inside the signed value. Keep
+        # accepting the legacy three-part payload for tickets issued before
+        # the migration, but enforce the stronger binding for new tickets.
+        if len(parts) == 4 and parts[1] != str(ticket.event_id):
+            raise InvalidTicketStateError("Barcode is for a different event.")
         return ticket
 
     async def resolve_by_ticket_code(self, ticket_code: str, actor: User) -> Ticket:
         """
-        The manual-entry fallback for a damaged/unreadable QR (Section 8,
-        Phase 5) — deliberately does NOT require the qr_signature the
-        camera-scan path (resolve_by_scan_payload) does. A human can't
+        The manual-entry fallback for a damaged/unreadable barcode deliberately
+        does NOT require the barcode signature because the high-entropy code
+        is only a manual fallback; the camera-scan path
+        (resolve_by_scan_payload) does require it. A human can't
         type a cryptographic signature from memory, so this instead
         relies on: (1) the caller already being an authenticated,
         can_access_ticket-checked Staff Mode account (enforced in the
@@ -201,12 +200,21 @@ class TicketService:
             raise DuplicateCheckInError("This ticket has already been checked in.")
         if ticket.status != TicketStatus.ISSUED:
             raise InvalidTicketStateError("This ticket is not valid for check-in.")
+        event = await self.db.get(Event, ticket.event_id)
+        event_end = event.end_date if event is not None else None
+        if event_end is not None and event_end.tzinfo is None:
+            event_end = event_end.replace(tzinfo=timezone.utc)
+        if event_end is None or datetime.now(timezone.utc) >= event_end:
+            raise InvalidTicketStateError("This ticket has expired because the event has ended.")
         if ticket.payment_id is not None:
             payment = await self.db.get(Payment, ticket.payment_id)
             if payment is None or payment.status != PaymentStatus.VERIFIED:
                 raise InvalidTicketStateError("Payment has not been verified for this ticket.")
         registration = await self.registrations.get_by_id(ticket.registration_id)
-        if registration is None or registration.status != RegistrationStatus.CONFIRMED:
+        if registration is None or registration.status not in {
+            RegistrationStatus.CONFIRMED,
+            RegistrationStatus.REFUND_FAILED,
+        }:
             raise InvalidTicketStateError("Registration is not confirmed.")
         try:
             check_in = await self.checkins.create(
@@ -225,6 +233,8 @@ class TicketService:
         ticket.status = TicketStatus.CHECKED_IN
         ticket.checked_in_at = datetime.now(timezone.utc)
         ticket.checked_in_by = actor.id
+        registration.status = RegistrationStatus.CHECKED_IN
+        registration.checked_in_at = ticket.checked_in_at
         await write_audit_log(
             self.db,
             entity_type="ticket",
@@ -243,7 +253,7 @@ class TicketService:
     async def sync_offline_checkins(self, actor: User, scans: list[OfflineCheckInIn]) -> list[CheckIn]:
         processed: list[CheckIn] = []
         for scan in scans:
-            ticket = await self.resolve_by_scan_payload(scan.scan_payload, scan.qr_signature)
+            ticket = await self.resolve_by_scan_payload(scan.scan_payload, scan.barcode_signature)
             processed.append(
                 await self.check_in(
                     ticket.id,

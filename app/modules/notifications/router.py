@@ -14,15 +14,25 @@ contain "event_id" on this route.
 """
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_role
 from app.modules.identity.models import User
-from app.modules.notifications.schemas import NotificationOut, NotificationSendIn, NotificationTemplateOut
+from app.modules.notifications.models import DeviceTokenPlatform
+from app.modules.notifications.schemas import (
+    DeviceTokenIn,
+    DeviceTokenOut,
+    NotificationOut,
+    NotificationPreferenceIn,
+    NotificationPreferenceOut,
+    NotificationSendIn,
+    NotificationTemplateOut,
+)
 from app.modules.notifications.service import NotificationService
 from app.modules.rbac.models import RoleName
+from app.core.pagination import Page
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 templates_router = APIRouter(tags=["notifications"])
@@ -50,9 +60,46 @@ async def mark_notification_read(
     return await service.mark_read(notification_id, current_user)
 
 
-@router.get("", response_model=list[NotificationOut])
+@router.post("/devices", response_model=DeviceTokenOut)
+async def register_device(
+    payload: DeviceTokenIn,
+    current_user: User = Depends(get_current_user),
+    service: NotificationService = Depends(get_notification_service),
+):
+    return await service.register_device(current_user, payload.token, payload.platform)
+
+
+@router.delete("/devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_device(
+    device_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    service: NotificationService = Depends(get_notification_service),
+):
+    await service.remove_device(current_user, device_id)
+
+
+@router.get("/preferences", response_model=NotificationPreferenceOut)
+async def get_notification_preferences(
+    current_user: User = Depends(get_current_user),
+    service: NotificationService = Depends(get_notification_service),
+):
+    return await service.get_or_create_preferences(current_user.id)
+
+
+@router.patch("/preferences", response_model=NotificationPreferenceOut)
+async def update_notification_preferences(
+    payload: NotificationPreferenceIn,
+    current_user: User = Depends(get_current_user),
+    service: NotificationService = Depends(get_notification_service),
+):
+    return await service.update_preferences(current_user, payload.model_dump(exclude_unset=True))
+
+
+@router.get("", response_model=list[NotificationOut] | Page[NotificationOut])
 async def list_notifications_for_event(
     event_id: uuid.UUID,
+    page: int | None = Query(None, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     service: NotificationService = Depends(get_notification_service),
 ):
@@ -62,7 +109,14 @@ async def list_notifications_for_event(
     does NOT use require_scoped_role — same reasoning as /send above.
     Authorization is enforced inside the service.
     """
-    return await service.list_notifications_for_event(current_user, event_id)
+    if not isinstance(page, int):
+        page = None
+    if not isinstance(page_size, int):
+        page_size = 25
+    if page is None:
+        return await service.list_notifications_for_event(current_user, event_id)
+    items, total = await service.page_notifications_for_event(current_user, event_id, page=page, page_size=page_size)
+    return Page(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.post(
@@ -89,6 +143,7 @@ async def send_notification(
         participation_types=payload.target.participation_types,
         registration_statuses=payload.target.registration_statuses,
         recipient_user_ids=payload.target.recipient_user_ids,
+        notification_type=payload.notification_type,
     )
 
 

@@ -4,7 +4,10 @@ handlers, and every module's router under one versioned API prefix —
 this is the only file that knows about every module at once.
 """
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, status
+from redis.asyncio import Redis
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # Registers every model with SQLAlchemy's mapper before anything else touches the ORM.
 from app.core import model_registry  # noqa: F401
@@ -12,6 +15,8 @@ from app.config import get_settings
 from app.exceptions import register_exception_handlers
 from app.logging_config import configure_logging
 from app.middleware import register_middleware
+from app.database import get_db
+from app.redis_client import get_redis
 
 # ---- Routers ----
 from app.modules.config_engine.router import router as config_engine_router
@@ -187,3 +192,19 @@ app.include_router(
 @app.get("/health", tags=["meta"])
 async def health_check() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/ready", tags=["meta"])
+async def readiness_check(
+    db: AsyncSession = Depends(get_db), redis: Redis = Depends(get_redis)
+) -> dict[str, str]:
+    """Readiness probe: only succeeds when required runtime dependencies respond."""
+    try:
+        await db.execute(text("SELECT 1"))
+        await redis.ping()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Required service is unavailable.",
+        ) from exc
+    return {"status": "ready"}

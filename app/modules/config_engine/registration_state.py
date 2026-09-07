@@ -31,6 +31,22 @@ def parse_registration_end_at(details: dict | None) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def parse_cancellation_deadline_at(details: dict | None) -> datetime | None:
+    raw_value = (details or {}).get("cancellation_deadline_at")
+    if not raw_value:
+        return None
+    if isinstance(raw_value, datetime):
+        parsed = raw_value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(raw_value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def calculate_registration_availability(
     *,
     event_status: EventStatus,

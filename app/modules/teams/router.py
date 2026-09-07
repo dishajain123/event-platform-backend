@@ -29,6 +29,7 @@ from app.modules.teams.schemas import (
     TeamOut,
 )
 from app.modules.teams.service import TeamService
+from app.core.pagination import Page
 
 router = APIRouter(prefix="/teams", tags=["teams"])
 
@@ -85,13 +86,19 @@ async def submit_team(
     return await service.submit_team(uuid.UUID(team_id), current_user)
 
 
-@router.get("", response_model=list[TeamOut])
+@router.get("", response_model=list[TeamOut] | Page[TeamOut])
 async def list_teams(
     event_id: uuid.UUID | None = None,
+    page: int | None = Query(None, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     service: TeamService = Depends(get_team_service),
 ):
+    if not isinstance(page, int):
+        page = None
+    if not isinstance(page_size, int):
+        page_size = 25
     if event_id is None:
         return []
     is_global_console = await user_has_global_role(
@@ -106,7 +113,10 @@ async def list_teams(
     )
     if not is_global_console and not is_event_manager:
         raise PermissionDeniedError("You don't have permission to view teams for this event.")
-    return await service.list_teams(event_id)
+    if page is None:
+        return await service.list_teams(event_id)
+    items, total = await service.page_teams(event_id, page=page, page_size=page_size)
+    return Page(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.get("/{team_id}", response_model=TeamOut)

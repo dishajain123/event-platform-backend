@@ -55,6 +55,9 @@ class FunnelService:
     async def list_entries(self, stage_id: uuid.UUID) -> list[Entry]:
         return await self.funnels.list_entries_for_stage(stage_id)
 
+    async def page_entries(self, stage_id: uuid.UUID, *, page=1, page_size=25):
+        return await self.funnels.page_entries_for_stage(stage_id, page=page, page_size=page_size)
+
     async def list_public_vote_entries(self, stage_id: uuid.UUID) -> list[Entry]:
         """
         BUG FIX: found while building the mobile app's public voting

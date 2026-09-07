@@ -5,6 +5,8 @@ since OTP state is short-lived and doesn't belong in Postgres); JWT
 session issuance; identity document encryption.
 """
 import uuid
+import hashlib
+import time
 
 from cryptography.fernet import Fernet
 from redis.asyncio import Redis
@@ -13,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.audit import write_audit_log
 from app.exceptions import PermissionDeniedError
+from app.exceptions import RateLimitedError
 from app.modules.identity.exceptions import (
     InvalidOTPError,
     OTPExpiredError,
@@ -43,6 +46,22 @@ def _otp_attempts_key(mobile_number: str) -> str:
     return f"otp:attempts:{mobile_number}"
 
 
+def _request_limit_key(kind: str, value: str) -> str:
+    digest = hashlib.sha256(value.encode()).hexdigest()[:32]
+    return f"otp:limit:{kind}:{digest}"
+
+
+async def _claim_rate_limit(redis: Redis, key: str, seconds: int) -> bool:
+    """Claim a Redis throttle key atomically, with compatibility for test doubles."""
+    try:
+        return bool(await redis.set(key, "1", ex=seconds, nx=True))
+    except TypeError:
+        if await redis.get(key):
+            return False
+        await redis.set(key, "1", ex=seconds)
+        return True
+
+
 class IdentityService:
     def __init__(self, db: AsyncSession, redis: Redis):
         self.db = db
@@ -54,7 +73,9 @@ class IdentityService:
 
     # ---- OTP flow ----
 
-    async def request_otp(self, mobile_number: str) -> int:
+    async def request_otp(
+        self, mobile_number: str, *, client_ip: str | None = None, device_id: str | None = None
+    ) -> int:
         """
         Generates and stores a hashed OTP with a TTL, enforces the resend
         cooldown, and (in a later phase) dispatches it via the SMS provider
@@ -62,19 +83,40 @@ class IdentityService:
         """
         normalized_mobile = normalize_mobile_number(mobile_number)
 
-        if await self.redis.get(_otp_cooldown_key(normalized_mobile)):
+        cooldown_key = _otp_cooldown_key(normalized_mobile)
+        if await self.redis.get(cooldown_key):
             ttl = await self.redis.ttl(_otp_cooldown_key(normalized_mobile))
             raise OTPResendTooSoonError(
                 f"Please wait {ttl} seconds before requesting another OTP."
             )
+        if not await _claim_rate_limit(self.redis, cooldown_key, settings.otp_resend_cooldown_seconds):
+            ttl = await self.redis.ttl(cooldown_key)
+            raise OTPResendTooSoonError(f"Please wait {ttl} seconds before requesting another OTP.")
+
+        if client_ip:
+            ip_window = str(int(time.time()) // settings.otp_rate_limit_window_seconds)
+            ip_key = _request_limit_key("ip", f"{client_ip}:{ip_window}")
+            ip_count = await self.redis.incr(ip_key)
+            await self.redis.expire(ip_key, settings.otp_rate_limit_window_seconds)
+            if ip_count > settings.otp_ip_max_requests_per_window:
+                raise RateLimitedError("Too many OTP requests. Please try again shortly.")
+        if device_id:
+            device_key = _request_limit_key("device", device_id)
+            if not await _claim_rate_limit(self.redis, device_key, settings.otp_ip_cooldown_seconds):
+                raise RateLimitedError("Too many OTP requests from this device. Please try again shortly.")
+            await self.redis.set(device_key, "1", ex=settings.otp_ip_cooldown_seconds)
+        window_key = _request_limit_key(
+            "global", str(int(time.time()) // settings.otp_rate_limit_window_seconds)
+        )
+        count = await self.redis.incr(window_key)
+        await self.redis.expire(window_key, settings.otp_rate_limit_window_seconds)
+        if count > settings.otp_global_max_requests_per_window:
+            raise RateLimitedError("OTP service is temporarily busy. Please try again shortly.")
 
         otp = generate_otp()
         hashed = hash_otp(otp, normalized_mobile)
 
         await self.redis.set(_otp_redis_key(normalized_mobile), hashed, ex=settings.otp_expiry_seconds)
-        await self.redis.set(
-            _otp_cooldown_key(normalized_mobile), "1", ex=settings.otp_resend_cooldown_seconds
-        )
         await self.redis.delete(_otp_attempts_key(normalized_mobile))
 
         # Phase 6 wires this to app/integrations/sms_provider.py for real dispatch.
@@ -177,6 +219,21 @@ class IdentityService:
             )
 
         return results
+
+    async def page_accounts(self, *, page=1, page_size=25) -> tuple[list[dict], int]:
+        users, total = await self.users.page_all(page=page, page_size=page_size)
+        results = []
+        for user in users:
+            assignments = await self.role_assignments.list_for_user(user.id)
+            roles = []
+            for assignment in assignments:
+                if assignment.status != AssignmentStatus.ACTIVE:
+                    continue
+                role = await self.rbac.roles.get_by_id(assignment.role_id)
+                if role:
+                    roles.append({"role_name": role.name, "event_id": assignment.event_id})
+            results.append({"id": user.id, "mobile_number": user.mobile_number, "name": user.name, "email": user.email, "is_active": user.is_active, "roles": roles})
+        return results, total
 
     async def update_account_status(
         self,

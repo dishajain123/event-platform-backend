@@ -28,6 +28,13 @@ class RefundStatus(StrEnum):
     FAILED = "failed"
 
 
+class WebhookProcessingStatus(StrEnum):
+    RECEIVED = "received"
+    PROCESSING = "processing"
+    PROCESSED = "processed"
+    FAILED = "failed"
+
+
 class DiscountType(StrEnum):
     PERCENTAGE = "percentage"
     FIXED = "fixed"
@@ -66,8 +73,13 @@ class Payment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     payment_metadata: Mapped[dict | None] = mapped_column("metadata_json", JSON, default=None)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    reconciliation_status: Mapped[str] = mapped_column(String(40), default="not_required", nullable=False)
+    reconciliation_attempts: Mapped[int] = mapped_column(default=0, nullable=False)
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    reconciliation_error: Mapped[str | None] = mapped_column(Text, default=None)
 
     refunds: Mapped[list["Refund"]] = relationship(back_populates="payment", cascade="all, delete-orphan")
+    registration: Mapped["Registration"] = relationship("Registration", back_populates="payment")
 
 
 class Refund(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -83,5 +95,25 @@ class Refund(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     gateway_refund_id: Mapped[str | None] = mapped_column(String(100), default=None)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    failure_reason: Mapped[str | None] = mapped_column(Text, default=None)
+    reconciliation_attempts: Mapped[int] = mapped_column(default=0, nullable=False)
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    reconciliation_error: Mapped[str | None] = mapped_column(Text, default=None)
 
     payment: Mapped["Payment"] = relationship(back_populates="refunds")
+
+
+class PaymentWebhookInbox(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "payment_webhook_inbox"
+
+    provider_event_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    provider: Mapped[str] = mapped_column(String(50), default="razorpay", nullable=False)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    processing_status: Mapped[WebhookProcessingStatus] = mapped_column(
+        Enum(WebhookProcessingStatus), default=WebhookProcessingStatus.RECEIVED, nullable=False
+    )
+    attempts: Mapped[int] = mapped_column(default=0, nullable=False)
+    failure_reason: Mapped[str | None] = mapped_column(Text, default=None)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)

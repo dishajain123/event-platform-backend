@@ -103,6 +103,17 @@ class SponsorshipService:
             event_ids = {event_id}
         return await self.repo.list_inquiries(event_ids=event_ids, status=status)
 
+    async def page_manageable_inquiries(self, actor: User, event_id=None, status=None, search=None, *, page=1, page_size=25):
+        if await self._global_manage(actor):
+            event_ids = {event_id} if event_id else None
+        else:
+            event_ids = await user_scoped_event_ids(self.db, actor.id, {RoleName.EVENT_MANAGER})
+            if event_id is not None:
+                if event_id not in event_ids:
+                    raise PermissionDeniedError("You don't have permission to view sponsorship for this event.")
+                event_ids = {event_id}
+        return await self.repo.page_inquiries(event_ids=event_ids, status=status, search=search, page=page, page_size=page_size)
+
     async def list_manageable_sponsors(self, actor: User, event_id: uuid.UUID | None = None):
         if await self._global_manage(actor):
             event_ids = {event_id} if event_id else None

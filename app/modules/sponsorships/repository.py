@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -74,6 +74,31 @@ class SponsorshipRepository:
             stmt = stmt.join(SponsorshipInquiryEvent).where(SponsorshipInquiryEvent.event_id.in_(event_ids)).distinct()
         stmt = stmt.order_by(SponsorshipInquiry.created_at.desc())
         return list((await self.db.execute(stmt)).scalars().unique().all())
+
+    async def page_inquiries(self, *, user_id=None, event_ids=None, status=None, search=None, page=1, page_size=25):
+        if event_ids is not None and not event_ids:
+            return [], 0
+        filters = []
+        if user_id is not None:
+            filters.append(SponsorshipInquiry.user_id == user_id)
+        if status is not None:
+            filters.append(SponsorshipInquiry.status == status)
+        if search:
+            term = f"%{search.strip()}%"
+            filters.append(SponsorshipInquiry.company_name.ilike(term) | SponsorshipInquiry.contact_person.ilike(term) | SponsorshipInquiry.email.ilike(term))
+        stmt = select(SponsorshipInquiry.id)
+        if event_ids is not None:
+            stmt = stmt.join(SponsorshipInquiryEvent).where(SponsorshipInquiryEvent.event_id.in_(event_ids)).distinct()
+        stmt = stmt.where(*filters)
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total = await self.db.scalar(count_stmt) or 0
+        ids = await self.db.execute(stmt.order_by(SponsorshipInquiry.created_at.desc(), SponsorshipInquiry.id.desc()).offset((page - 1) * page_size).limit(page_size))
+        ordered_ids = list(ids.scalars().all())
+        if not ordered_ids:
+            return [], total
+        result = await self.db.execute(self._inquiry_stmt().where(SponsorshipInquiry.id.in_(ordered_ids)))
+        by_id = {item.id: item for item in result.scalars().unique().all()}
+        return [by_id[item_id] for item_id in ordered_ids if item_id in by_id], total
 
     async def list_public_events(self, event_ids: list[uuid.UUID]) -> list[Event]:
         if not event_ids:

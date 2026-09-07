@@ -22,6 +22,7 @@ from app.modules.rbac.models import RoleName
 from app.modules.tickets.models import CheckInSource
 from app.modules.tickets.schemas import CheckInIn, CheckInOut, OfflineCheckInBatchIn, ResolveTicketIn, TicketOut
 from app.modules.tickets.service import TicketService
+from app.core.pagination import Page
 
 router = APIRouter(prefix="/tickets", tags=["tickets"])
 checkins_router = APIRouter(tags=["tickets"])
@@ -46,13 +47,13 @@ async def resolve_ticket_by_scan(
     service: TicketService = Depends(get_ticket_service),
 ):
     """
-    Called by: mobile Staff Mode's QR scanner, immediately after every
-    scan — resolves a scanned qr_payload into the real ticket (and its
+    Called by: mobile Staff Mode's barcode scanner, immediately after every
+    scan — resolves a scanned barcode payload into the real ticket (and its
     UUID `id`) that POST /{ticket_id}/check-in requires. Declared before
     GET /{ticket_id} below so the literal "/resolve" path is never
     swallowed by the parameterized route.
     """
-    ticket = await service.resolve_by_scan_payload(payload.scan_payload, payload.qr_signature)
+    ticket = await service.resolve_by_scan_payload(payload.scan_payload, payload.barcode_signature)
     if not await service.can_check_in_ticket(ticket, current_user):
         from app.exceptions import PermissionDeniedError
 
@@ -68,7 +69,7 @@ async def resolve_ticket_by_code(
 ):
     """
     Called by: mobile Staff Mode's manual-entry fallback, for a
-    damaged/unreadable QR (Section 8, Phase 5). Declared before
+    damaged/unreadable barcode. Declared before
     GET /{ticket_id} so "/by-code/..." is never swallowed by the
     parameterized route.
     """
@@ -107,7 +108,7 @@ async def check_in_ticket(
 ):
     """
     Called by: mobile Staff Mode (Volunteer/Staff Member/Staff Lead/Event
-    Coordinator/Event Manager scanning a QR ticket at the gate). See the
+    Coordinator/Event Manager scanning a barcode ticket at the gate). See the
     module docstring above for why this isn't a require_scoped_role dependency.
     """
     return await service.check_in(
@@ -120,14 +121,20 @@ async def check_in_ticket(
     )
 
 
-@checkins_router.get("/check-ins", response_model=list[CheckInOut])
+@checkins_router.get("/check-ins", response_model=list[CheckInOut] | Page[CheckInOut])
 async def list_checkins(
     event_id: str = Query(...),
     venue_id: str | None = None,
+    page: int | None = Query(None, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     service: TicketService = Depends(get_ticket_service),
 ):
+    if not isinstance(page, int):
+        page = None
+    if not isinstance(page_size, int):
+        page_size = 25
     event_uuid = uuid.UUID(event_id)
     is_allowed = await user_has_global_role(
         db, current_user.id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN}
@@ -142,7 +149,10 @@ async def list_checkins(
         from app.exceptions import PermissionDeniedError
 
         raise PermissionDeniedError("You don't have permission to view check-ins for this event.")
-    return await service.list_checkins(event_uuid, uuid.UUID(venue_id) if venue_id else None)
+    if page is None:
+        return await service.list_checkins(event_uuid, uuid.UUID(venue_id) if venue_id else None)
+    items, total = await service.page_checkins(event_uuid, uuid.UUID(venue_id) if venue_id else None, page=page, page_size=page_size)
+    return Page(items=items, total=total, page=page, page_size=page_size)
 
 
 @checkins_router.post("/check-ins/sync", response_model=list[CheckInOut])

@@ -9,6 +9,7 @@ from app.modules.registrations.models import (
     Registration,
     RegistrationParticipant,
 )
+from app.modules.payments.models import Payment
 
 
 class RegistrationRepository:
@@ -32,7 +33,10 @@ class RegistrationRepository:
         # an earlier validation error.
         result = await self.db.execute(
             select(Registration)
-            .options(selectinload(Registration.participants))
+            .options(
+                selectinload(Registration.participants),
+                selectinload(Registration.payment).selectinload(Payment.refunds),
+            )
             .where(Registration.id == registration_id)
         )
         return result.scalar_one_or_none()
@@ -40,7 +44,10 @@ class RegistrationRepository:
     async def list_for_user(self, user_id: uuid.UUID) -> list[Registration]:
         result = await self.db.execute(
             select(Registration)
-            .options(selectinload(Registration.participants))
+            .options(
+                selectinload(Registration.participants),
+                selectinload(Registration.payment).selectinload(Payment.refunds),
+            )
             .where(Registration.user_id == user_id)
         )
         return list(result.scalars().all())
@@ -53,7 +60,10 @@ class RegistrationRepository:
             return []
         result = await self.db.execute(
             select(Registration)
-            .options(selectinload(Registration.participants))
+            .options(
+                selectinload(Registration.participants),
+                selectinload(Registration.payment).selectinload(Payment.refunds),
+            )
             .where(Registration.event_id.in_(event_ids))
             .order_by(Registration.created_at.desc())
         )
@@ -62,10 +72,54 @@ class RegistrationRepository:
     async def list_all(self) -> list[Registration]:
         result = await self.db.execute(
             select(Registration)
-            .options(selectinload(Registration.participants))
+            .options(
+                selectinload(Registration.participants),
+                selectinload(Registration.payment).selectinload(Payment.refunds),
+            )
             .order_by(Registration.created_at.desc())
         )
         return list(result.scalars().all())
+
+    async def page_for_events(
+        self,
+        event_ids: set[uuid.UUID] | None,
+        *,
+        page: int,
+        page_size: int,
+        search: str | None = None,
+        status=None,
+        participation_type: str | None = None,
+    ) -> tuple[list[Registration], int]:
+        filters = []
+        if event_ids is not None:
+            if not event_ids:
+                return [], 0
+            filters.append(Registration.event_id.in_(event_ids))
+        if search:
+            filters.append(
+                Registration.id.in_(
+                    select(RegistrationParticipant.registration_id).where(
+                        RegistrationParticipant.full_name.ilike(f"%{search}%")
+                    )
+                )
+            )
+        if status is not None:
+            filters.append(Registration.status == status)
+        if participation_type:
+            filters.append(Registration.participation_type == participation_type)
+        total = int((await self.db.execute(select(func.count()).select_from(Registration).where(*filters))).scalar_one())
+        result = await self.db.execute(
+            select(Registration)
+            .options(
+                selectinload(Registration.participants),
+                selectinload(Registration.payment).selectinload(Payment.refunds),
+            )
+            .where(*filters)
+            .order_by(Registration.created_at.desc(), Registration.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        return list(result.scalars().all()), total
 
     async def count_active_for_event(self, event_id: uuid.UUID) -> int:
         result = await self.db.execute(

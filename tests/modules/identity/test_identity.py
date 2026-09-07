@@ -11,6 +11,7 @@ from app.modules.identity.exceptions import (
     OTPResendTooSoonError,
     TooManyOTPAttemptsError,
 )
+from app.exceptions import RateLimitedError
 from app.modules.identity.service import IdentityService
 from app.security import decode_token
 
@@ -80,6 +81,17 @@ async def test_resend_before_cooldown_expires_is_rejected(db_session, fake_redis
     await service.request_otp(mobile)
     with pytest.raises(OTPResendTooSoonError):
         await service.request_otp(mobile)
+
+
+@pytest.mark.asyncio
+async def test_otp_ip_limit_is_enforced_without_exposing_identity(db_session, fake_redis, monkeypatch):
+    from app.modules.identity import service as identity_service_module
+
+    monkeypatch.setattr(identity_service_module.settings, "otp_ip_max_requests_per_window", 1)
+    service = IdentityService(db_session, fake_redis)
+    await service.request_otp("+919876543215", client_ip="198.51.100.10")
+    with pytest.raises(RateLimitedError):
+        await service.request_otp("+919876543216", client_ip="198.51.100.10")
 
 @pytest.mark.asyncio
 async def test_user_can_update_their_own_name_and_email(db_session, fake_redis):

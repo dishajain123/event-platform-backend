@@ -33,6 +33,23 @@ class GatewayRefund:
     amount: int
 
 
+@dataclass(slots=True)
+class GatewayPaymentSnapshot:
+    payment_id: str
+    order_id: str
+    status: str
+    amount: int
+    currency: str
+
+
+@dataclass(slots=True)
+class GatewayRefundSnapshot:
+    refund_id: str
+    payment_id: str
+    status: str
+    amount: int
+
+
 class PaymentGatewayClient:
     def create_order(self, *, amount: int, currency: str, receipt: str) -> GatewayOrder:
         raise NotImplementedError
@@ -55,6 +72,12 @@ class PaymentGatewayClient:
         raise NotImplementedError
 
     def initiate_refund(self, *, payment_id: str, amount: int) -> GatewayRefund:
+        raise NotImplementedError
+
+    def fetch_payment(self, *, payment_id: str | None = None, order_id: str | None = None) -> GatewayPaymentSnapshot | None:
+        raise NotImplementedError
+
+    def fetch_refund(self, *, refund_id: str) -> GatewayRefundSnapshot | None:
         raise NotImplementedError
 
 
@@ -140,6 +163,38 @@ class RazorpayPaymentGatewayClient(PaymentGatewayClient):
             refund_id=f"rfnd_{secrets.token_hex(12)}",
             payment_id=payment_id,
             amount=amount,
+        )
+
+    def fetch_payment(self, *, payment_id: str | None = None, order_id: str | None = None) -> GatewayPaymentSnapshot | None:
+        if not self._live:
+            return None
+        if payment_id:
+            data = self._request("GET", f"/v1/payments/{payment_id}")
+        elif order_id:
+            payments = self._request("GET", "/v1/payments", params={"order_id": order_id})
+            items = payments.get("items", []) if isinstance(payments, dict) else []
+            data = items[0] if items else None
+        else:
+            return None
+        if not data:
+            return None
+        return GatewayPaymentSnapshot(
+            payment_id=str(data["id"]),
+            order_id=str(data.get("order_id") or order_id or ""),
+            status=str(data.get("status", "unknown")),
+            amount=int(data.get("amount", 0)),
+            currency=str(data.get("currency", "")),
+        )
+
+    def fetch_refund(self, *, refund_id: str) -> GatewayRefundSnapshot | None:
+        if not self._live:
+            return None
+        data = self._request("GET", f"/v1/refunds/{refund_id}")
+        return GatewayRefundSnapshot(
+            refund_id=str(data["id"]),
+            payment_id=str(data["payment_id"]),
+            status=str(data.get("status", "unknown")),
+            amount=int(data.get("amount", 0)),
         )
 
 

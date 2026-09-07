@@ -18,3 +18,39 @@ def reconcile_payment(gateway_order_id: str, gateway_payment_id: str, gateway_si
         return "ok"
 
     return asyncio.run(_run())
+
+
+@celery_app.task(
+    name="payments.reconcile_stale_payments",
+    autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 3},
+)
+def reconcile_stale_payments() -> int:
+    async def _run() -> int:
+        async with AsyncSessionLocal() as db:
+            return await PaymentService(db).reconcile_stale_payments_once()
+
+    return asyncio.run(_run())
+
+
+@celery_app.task(
+    name="payments.reconcile_stale_refunds",
+    autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 3},
+)
+def reconcile_stale_refunds() -> int:
+    async def _run() -> int:
+        async with AsyncSessionLocal() as db:
+            return await PaymentService(db).reconcile_stale_refunds_once()
+
+    return asyncio.run(_run())
+
+
+@celery_app.task(
+    name="payments.retry_failed_webhooks",
+    autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 3},
+)
+def retry_failed_webhooks() -> int:
+    async def _run() -> int:
+        async with AsyncSessionLocal() as db:
+            return await PaymentService(db).retry_failed_webhooks_once()
+
+    return asyncio.run(_run())

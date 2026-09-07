@@ -26,9 +26,12 @@ from app.modules.identity.models import User
 from app.modules.rbac.models import RoleName
 from app.modules.registrations.schemas import (
     RegistrationCreateIn,
+    RegistrationCancellationIn,
     RegistrationDecisionIn,
     RegistrationOut,
 )
+from app.core.pagination import Page
+from app.modules.registrations.models import RegistrationStatus
 from app.modules.registrations.service import RegistrationService
 
 router = APIRouter(prefix="/registrations", tags=["registrations"])
@@ -67,25 +70,60 @@ async def list_my_registrations(
     return await service.list_registrations_for_actor(current_user)
 
 
-@router.get("", response_model=list[RegistrationOut])
+@router.get("", response_model=list[RegistrationOut] | Page[RegistrationOut])
 async def list_registrations(
     event_id: uuid.UUID | None = None,
+    page: int | None = Query(default=None, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=100),
+    registration_status: RegistrationStatus | None = None,
+    participation_type: str | None = Query(default=None, max_length=50),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     service: RegistrationService = Depends(get_registration_service),
 ):
+    # Direct service-level tests may call this function without FastAPI
+    # resolving Query defaults; normalize those defaults before building SQL.
+    if not isinstance(search, str):
+        search = None
+    if not isinstance(participation_type, str):
+        participation_type = None
+    if not isinstance(page, int):
+        page = None
+    if not isinstance(page_size, int):
+        page_size = 20
+    paginated = page is not None
+    requested_page = page or 1
     is_global_console = await user_has_global_role(
         db, current_user.id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN}
     )
     if is_global_console:
         if event_id:
+            if paginated:
+                items, total = await service.page_registrations(
+                    {event_id}, page=requested_page, page_size=page_size, search=search,
+                    status=registration_status, participation_type=participation_type,
+                )
+                return Page(items=items, total=total, page=requested_page, page_size=page_size)
             return await service.list_registrations_for_event(event_id)
+        if paginated:
+            items, total = await service.page_registrations(
+                None, page=requested_page, page_size=page_size, search=search,
+                status=registration_status, participation_type=participation_type,
+            )
+            return Page(items=items, total=total, page=requested_page, page_size=page_size)
         return await service.list_all_registrations()
     if event_id is None:
         managed_event_ids = await user_scoped_event_ids(
             db, current_user.id, {RoleName.EVENT_MANAGER}
         )
         if managed_event_ids:
+            if paginated:
+                items, total = await service.page_registrations(
+                    managed_event_ids, page=requested_page, page_size=page_size, search=search,
+                    status=registration_status, participation_type=participation_type,
+                )
+                return Page(items=items, total=total, page=requested_page, page_size=page_size)
             return await service.list_registrations_for_events(managed_event_ids)
         return await service.list_registrations_for_actor(current_user)
     is_event_manager = await user_has_scoped_role(
@@ -97,6 +135,12 @@ async def list_registrations(
     )
     if not is_event_manager:
         raise PermissionDeniedError("You don't have permission to view registrations for this event.")
+    if paginated:
+        items, total = await service.page_registrations(
+            {event_id}, page=requested_page, page_size=page_size, search=search,
+            status=registration_status, participation_type=participation_type,
+        )
+        return Page(items=items, total=total, page=requested_page, page_size=page_size)
     return await service.list_registrations_for_event(event_id)
 
 
@@ -107,6 +151,19 @@ async def get_registration(
     service: RegistrationService = Depends(get_registration_service),
 ):
     return await service.get_registration_visible_to_actor(current_user, uuid.UUID(registration_id))
+
+
+@router.post("/{registration_id}/cancel", response_model=RegistrationOut)
+async def cancel_registration(
+    registration_id: str,
+    payload: RegistrationCancellationIn,
+    current_user: User = Depends(get_current_user),
+    service: RegistrationService = Depends(get_registration_service),
+):
+    """Cancel a participant-owned registration or an authorized event registration."""
+    return await service.cancel_registration(
+        uuid.UUID(registration_id), current_user, payload.reason
+    )
 
 
 @router.post("/{registration_id}/approve", response_model=RegistrationOut)

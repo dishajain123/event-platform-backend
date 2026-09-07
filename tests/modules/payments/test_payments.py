@@ -3,6 +3,7 @@ Phase 4 payment coverage.
 """
 import hashlib
 import hmac
+import json
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -13,10 +14,13 @@ from app.config import get_settings
 from app.modules.config_engine.service import ConfigEngineService
 from app.modules.events.service import EventService
 from app.modules.identity.models import User
-from app.modules.payments.models import PaymentStatus, RefundStatus
+from app.modules.payments.models import PaymentStatus, PaymentWebhookInbox, RefundStatus, WebhookProcessingStatus
 from app.modules.payments.service import PaymentService
 from app.modules.rbac.models import Role, RoleAssignment, RoleName
 from app.modules.registrations.service import RegistrationService
+from app.modules.registrations.models import RegistrationStatus
+from app.integrations.payment_gateway_client import RazorpayPaymentGatewayClient
+from app.modules.tickets.exceptions import InvalidTicketStateError
 from app.modules.tickets.models import CheckInSource, TicketStatus
 from app.modules.tickets.service import TicketService
 
@@ -94,6 +98,11 @@ def _gateway_signature(order_id: str, payment_id: str) -> str:
     return hmac.new(secret, payload, hashlib.sha256).hexdigest()
 
 
+def _webhook_signature(body: bytes) -> str:
+    secret = get_settings().payment_gateway_webhook_secret.encode()
+    return hmac.new(secret, body, hashlib.sha256).hexdigest()
+
+
 @pytest.mark.asyncio
 async def test_payment_webhook_issues_ticket_and_refund_flow(db_session):
     context = await _make_paid_registration(db_session)
@@ -116,7 +125,7 @@ async def test_payment_webhook_issues_ticket_and_refund_flow(db_session):
     ticket = await ticket_service.tickets.get_by_registration_id(context["registration"].id)
     assert ticket is not None
     assert ticket.status == TicketStatus.ISSUED
-    assert ticket.qr_signature
+    assert ticket.barcode_signature
 
     second_pass = await payment_service.handle_webhook(
         context["payment"].gateway_order_id,
@@ -153,3 +162,156 @@ async def test_payment_webhook_issues_ticket_and_refund_flow(db_session):
     # ticket. Full refunds transition the payment to REFUNDED and cancel an
     # unused issued ticket.
     assert refreshed_payment.status == PaymentStatus.VERIFIED
+    assert (await RegistrationService(db_session).get_registration_or_raise(context["registration"].id)).status == RegistrationStatus.CONFIRMED
+
+
+@pytest.mark.asyncio
+async def test_paid_cancellation_waits_for_full_refund_then_cancels_ticket(db_session):
+    context = await _make_paid_registration(db_session)
+    payment_service = PaymentService(db_session)
+    await payment_service.handle_webhook(
+        context["payment"].gateway_order_id,
+        "pay_test_cancel",
+        _gateway_signature(context["payment"].gateway_order_id, "pay_test_cancel"),
+    )
+
+    registration_service = RegistrationService(db_session)
+    pending = await registration_service.cancel_registration(
+        context["registration"].id, context["registrant"], "Cannot attend"
+    )
+    assert pending.status == RegistrationStatus.REFUND_PENDING
+    assert await registration_service.registrations.count_active_for_event(context["event"].id) == 1
+
+    refund = await payment_service.refunds.list_all()
+    approved = await payment_service.approve_refund(refund[-1].id, context["admin"], "Approved")
+    assert approved.status == RefundStatus.PROCESSED
+    cancelled = await registration_service.get_registration_or_raise(context["registration"].id)
+    assert cancelled.status == RegistrationStatus.CANCELLED
+    ticket = await TicketService(db_session).tickets.get_by_registration_id(context["registration"].id)
+    assert ticket.status == TicketStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_failed_refund_keeps_payment_and_ticket_valid(monkeypatch, db_session):
+    context = await _make_paid_registration(db_session)
+    payment_service = PaymentService(db_session)
+    await payment_service.handle_webhook(
+        context["payment"].gateway_order_id,
+        "pay_test_failed_refund",
+        _gateway_signature(context["payment"].gateway_order_id, "pay_test_failed_refund"),
+    )
+    await RegistrationService(db_session).cancel_registration(
+        context["registration"].id, context["registrant"], "Please refund"
+    )
+
+    def fail_refund(**_kwargs):
+        raise RuntimeError("gateway unavailable")
+
+    monkeypatch.setattr(RazorpayPaymentGatewayClient, "initiate_refund", fail_refund)
+    refund = (await payment_service.refunds.list_all())[-1]
+    failed = await payment_service.approve_refund(refund.id, context["admin"], "Retry later")
+    assert failed.status == RefundStatus.FAILED
+    registration = await RegistrationService(db_session).get_registration_or_raise(context["registration"].id)
+    assert registration.status == RegistrationStatus.REFUND_FAILED
+    assert (await payment_service.payments.get_by_id(context["payment"].id)).status == PaymentStatus.VERIFIED
+
+
+@pytest.mark.asyncio
+async def test_cancelled_registration_cannot_check_in(db_session):
+    context = await _make_paid_registration(db_session)
+    payment_service = PaymentService(db_session)
+    await payment_service.handle_webhook(
+        context["payment"].gateway_order_id,
+        "pay_test_cancel_checkin",
+        _gateway_signature(context["payment"].gateway_order_id, "pay_test_cancel_checkin"),
+    )
+    registration_service = RegistrationService(db_session)
+    await registration_service.cancel_registration(context["registration"].id, context["registrant"])
+    refund = (await payment_service.refunds.list_all())[-1]
+    await payment_service.approve_refund(refund.id, context["admin"], "Approved")
+    ticket = await TicketService(db_session).tickets.get_by_registration_id(context["registration"].id)
+    with pytest.raises(InvalidTicketStateError):
+        await TicketService(db_session).check_in(ticket.id, context["staff"])
+
+
+@pytest.mark.asyncio
+async def test_razorpay_webhook_is_durable_and_idempotent(db_session):
+    context = await _make_paid_registration(db_session)
+    payment_service = PaymentService(db_session)
+    payload = {
+        "id": "evt_payment_captured_1",
+        "event": "payment.captured",
+        "payload": {
+            "payment": {
+                "entity": {
+                    "id": "pay_webhook_1",
+                    "order_id": context["payment"].gateway_order_id,
+                    "amount": 100000,
+                    "currency": "INR",
+                }
+            }
+        },
+    }
+    body = json.dumps(payload).encode()
+    first = await payment_service.handle_gateway_webhook(body, _webhook_signature(body), payload)
+    second = await payment_service.handle_gateway_webhook(body, _webhook_signature(body), payload)
+
+    assert first.status == PaymentStatus.VERIFIED
+    assert second.id == first.id
+    inbox = (await db_session.execute(select(PaymentWebhookInbox))).scalar_one()
+    assert inbox.processing_status == WebhookProcessingStatus.PROCESSED
+    assert inbox.attempts == 1
+    assert await TicketService(db_session).tickets.get_by_registration_id(context["registration"].id) is not None
+
+
+@pytest.mark.asyncio
+async def test_invalid_webhook_signature_is_not_persisted(db_session):
+    context = await _make_paid_registration(db_session)
+    payload = {
+        "id": "evt_invalid_signature",
+        "event": "payment.captured",
+        "payload": {"payment": {"entity": {"id": "pay_bad", "order_id": context["payment"].gateway_order_id}}},
+    }
+    body = json.dumps(payload).encode()
+    with pytest.raises(Exception):
+        await PaymentService(db_session).handle_gateway_webhook(body, "forged", payload)
+    assert (await db_session.execute(select(PaymentWebhookInbox))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_processed_refund_webhook_completes_registration_lifecycle(db_session):
+    context = await _make_paid_registration(db_session)
+    payment_service = PaymentService(db_session)
+    await payment_service.handle_webhook(
+        context["payment"].gateway_order_id,
+        "pay_refund_webhook",
+        _gateway_signature(context["payment"].gateway_order_id, "pay_refund_webhook"),
+    )
+    await RegistrationService(db_session).cancel_registration(
+        context["registration"].id, context["registrant"], "Please refund"
+    )
+    refund = (await payment_service.refunds.list_all())[-1]
+    refund.status = RefundStatus.PROCESSING
+    refund.gateway_refund_id = "rfnd_webhook_1"
+    await db_session.commit()
+    payload = {
+        "id": "evt_refund_processed_1",
+        "event": "refund.processed",
+        "payload": {
+            "refund": {
+                "entity": {
+                    "id": refund.gateway_refund_id,
+                    "payment_id": context["payment"].gateway_payment_id,
+                    "amount": 100000,
+                    "status": "processed",
+                }
+            }
+        },
+    }
+    body = json.dumps(payload).encode()
+    await payment_service.handle_gateway_webhook(body, _webhook_signature(body), payload)
+    registration = await RegistrationService(db_session).get_registration_or_raise(context["registration"].id)
+    ticket = await TicketService(db_session).tickets.get_by_registration_id(context["registration"].id)
+    assert registration.status == RegistrationStatus.CANCELLED
+    assert ticket.status == TicketStatus.CANCELLED
+    assert (await payment_service.payments.get_by_id(context["payment"].id)).status == PaymentStatus.REFUNDED

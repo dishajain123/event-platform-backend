@@ -1,7 +1,7 @@
 """Staff endpoints for invitations, acceptance, reassignment, and history."""
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -15,6 +15,7 @@ from app.modules.staff.schemas import (
     StaffAssignmentReassignIn,
 )
 from app.modules.staff.service import StaffService
+from app.core.pagination import Page
 
 router = APIRouter(prefix="/events/{event_id}/staff", tags=["staff"])
 accept_router = APIRouter(tags=["staff"])
@@ -56,7 +57,7 @@ async def create_staff_assignment(
 
 @router.get(
     "/assignments",
-    response_model=list[StaffAssignmentOut],
+    response_model=list[StaffAssignmentOut] | Page[StaffAssignmentOut],
     dependencies=[
         Depends(
             require_scoped_role(
@@ -68,10 +69,19 @@ async def create_staff_assignment(
 )
 async def list_staff_assignments(
     event_id: str,
+    page: int | None = Query(None, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     service: StaffService = Depends(get_staff_service),
 ):
-    return await service.list_assignments(event_id=uuid.UUID(event_id), actor=current_user)
+    if not isinstance(page, int):
+        page = None
+    if not isinstance(page_size, int):
+        page_size = 25
+    if page is None:
+        return await service.list_assignments(event_id=uuid.UUID(event_id), actor=current_user)
+    items, total = await service.page_assignments(event_id=uuid.UUID(event_id), actor=current_user, page=page, page_size=page_size)
+    return Page(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.post(

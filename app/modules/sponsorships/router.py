@@ -20,6 +20,7 @@ from app.modules.sponsorships.schemas import (
     EventSponsorOut,
 )
 from app.modules.sponsorships.service import SponsorshipService
+from app.core.pagination import Page
 
 router = APIRouter(prefix="/sponsorship", tags=["sponsorship"])
 
@@ -86,15 +87,25 @@ async def list_my_inquiries(
     return [inquiry_response(item) for item in await service.list_my_inquiries(current_user)]
 
 
-@router.get("/inquiries", response_model=list[SponsorshipInquiryOut])
+@router.get("/inquiries", response_model=list[SponsorshipInquiryOut] | Page[SponsorshipInquiryOut])
 async def list_inquiries(
     event_id: uuid.UUID | None = None,
     inquiry_status: SponsorshipInquiryStatus | None = Query(None, alias="status"),
+    page: int | None = Query(None, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    search: str | None = None,
     current_user: User = Depends(get_current_user),
     service: SponsorshipService = Depends(get_service),
 ):
-    items = await service.list_manageable_inquiries(current_user, event_id, inquiry_status)
-    return [inquiry_response(item) for item in items]
+    if not isinstance(page, int):
+        page = None
+    if not isinstance(page_size, int):
+        page_size = 25
+    if page is None:
+        items = await service.list_manageable_inquiries(current_user, event_id, inquiry_status)
+        return [inquiry_response(item) for item in items]
+    items, total = await service.page_manageable_inquiries(current_user, event_id, inquiry_status, search, page=page, page_size=page_size)
+    return Page(items=[inquiry_response(item) for item in items], total=total, page=page, page_size=page_size)
 
 
 @router.get("/inquiries/{inquiry_id}", response_model=SponsorshipInquiryOut)

@@ -294,3 +294,6 @@ class TeamService:
 
     async def list_teams(self, event_id: uuid.UUID) -> list[Team]:
         return await self.teams.list_for_event(event_id)
+
+    async def page_teams(self, event_id: uuid.UUID, *, page=1, page_size=25):
+        return await self.teams.page_for_event(event_id, page=page, page_size=page_size)

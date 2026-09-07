@@ -132,6 +132,11 @@ class AssistanceService:
             raise PermissionDeniedError("You don't have permission to view assistance requests for this event.")
         return await self.requests.list_for_event(event_id)
 
+    async def page_requests(self, *, event_id: uuid.UUID, actor: User, page=1, page_size=25):
+        if not await self._can_review_event(actor, event_id):
+            raise PermissionDeniedError("You don't have permission to view assistance requests for this event.")
+        return await self.requests.page_for_event(event_id, page=page, page_size=page_size)
+
     async def list_my_requests(self, actor: User) -> list[AssistanceRequest]:
         """
         Participant-facing assistance inbox. This closes the gap where a

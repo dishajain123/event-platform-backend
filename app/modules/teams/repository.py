@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.teams.models import InvitationStatus, Team, TeamInvitation, TeamMember
@@ -22,6 +22,11 @@ class TeamRepository:
     async def list_for_event(self, event_id: uuid.UUID) -> list[Team]:
         result = await self.db.execute(select(Team).where(Team.event_id == event_id))
         return list(result.scalars().all())
+
+    async def page_for_event(self, event_id: uuid.UUID, *, page=1, page_size=25):
+        total = await self.db.scalar(select(func.count(Team.id)).where(Team.event_id == event_id)) or 0
+        result = await self.db.execute(select(Team).where(Team.event_id == event_id).order_by(Team.created_at.desc(), Team.id.desc()).offset((page - 1) * page_size).limit(page_size))
+        return list(result.scalars().all()), total
 
     async def add_member(self, **kwargs) -> TeamMember:
         member = TeamMember(**kwargs)

@@ -16,8 +16,8 @@ class TicketOut(BaseModel):
     payment_id: uuid.UUID | None
     user_id: uuid.UUID
     ticket_code: str
-    qr_payload: str
-    qr_signature: str
+    barcode_payload: str
+    barcode_signature: str
     status: TicketStatus
     issued_at: datetime | None
     checked_in_at: datetime | None
@@ -46,12 +46,12 @@ class CheckInIn(BaseModel):
     venue_id: uuid.UUID | None = None
     offline_batch_id: str | None = None
     scan_payload: str | None = None
-    qr_signature: str | None = None
+    barcode_signature: str | None = None
 
 
 class OfflineCheckInIn(CheckInIn):
     scan_payload: str
-    qr_signature: str
+    barcode_signature: str
 
 
 class OfflineCheckInBatchIn(BaseModel):
@@ -66,4 +66,4 @@ class ResolveTicketIn(BaseModel):
     """
 
     scan_payload: str
-    qr_signature: str
+    barcode_signature: str

@@ -1,7 +1,7 @@
 """Payment endpoints."""
 import uuid
 
-from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -13,10 +13,13 @@ from app.modules.payments.schemas import (
     PaymentOut,
     PaymentWebhookIn,
     PaymentVerifyIn,
+    PaymentWebhookInboxOut,
     RefundApproveIn,
     RefundOut,
     RefundRequestIn,
 )
+from app.core.pagination import Page
+from app.modules.payments.models import PaymentStatus, RefundStatus
 from app.modules.payments.service import PaymentService
 from app.modules.rbac.models import RoleName
 
@@ -87,19 +90,56 @@ async def razorpay_webhook(
     )
 
 
-@router.get("", response_model=list[PaymentOut], dependencies=[Depends(require_role(RoleName.FINANCE_ADMIN, RoleName.FINANCE_OPERATOR, RoleName.FINANCE_AUDITOR, RoleName.SUPER_ADMIN))])
+@router.get("", response_model=list[PaymentOut] | Page[PaymentOut], dependencies=[Depends(require_role(RoleName.FINANCE_ADMIN, RoleName.FINANCE_OPERATOR, RoleName.FINANCE_AUDITOR, RoleName.SUPER_ADMIN))])
 async def list_payments(
     event_id: str | None = None,
+    page: int | None = Query(default=None, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=100),
+    payment_status: PaymentStatus | None = None,
     service: PaymentService = Depends(get_payment_service),
 ):
+    if not isinstance(page, int):
+        page = None
+    if not isinstance(page_size, int):
+        page_size = 25
+    if not isinstance(search, str):
+        search = None
+    if page is not None:
+        items, total = await service.page_payments(
+            event_id=uuid.UUID(event_id) if event_id else None,
+            page=page, page_size=page_size, search=search, status=payment_status,
+        )
+        return Page(items=items, total=total, page=page, page_size=page_size)
     if event_id is None:
         return await service.list_payments()
     return await service.list_payments(uuid.UUID(event_id))
 
 
+@router.get(
+    "/webhooks",
+    response_model=list[PaymentWebhookInboxOut],
+    dependencies=[
+        Depends(
+            require_role(
+                RoleName.FINANCE_ADMIN,
+                RoleName.FINANCE_OPERATOR,
+                RoleName.FINANCE_AUDITOR,
+                RoleName.SUPER_ADMIN,
+            )
+        )
+    ],
+)
+async def list_webhook_events(
+    limit: int = 100,
+    service: PaymentService = Depends(get_payment_service),
+):
+    return await service.list_webhook_events(limit)
+
+
 @refunds_router.get(
     "/refunds",
-    response_model=list[RefundOut],
+    response_model=list[RefundOut] | Page[RefundOut],
     dependencies=[
         Depends(
             require_role(
@@ -110,14 +150,30 @@ async def list_payments(
 )
 async def list_refunds(
     event_id: str | None = None,
+    page: int | None = Query(default=None, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=100),
+    refund_status: RefundStatus | None = None,
     service: PaymentService = Depends(get_payment_service),
 ):
+    if not isinstance(page, int):
+        page = None
+    if not isinstance(page_size, int):
+        page_size = 25
+    if not isinstance(search, str):
+        search = None
     """
     Called by: console (all Finance roles, read-only for Auditor). This
     is the Refunds queue's actual data source — previously there was no
     way to list refund requests at all, only draft one and approve a
     specific ID you'd have to already know from elsewhere.
     """
+    if page is not None:
+        items, total = await service.page_refunds(
+            event_id=uuid.UUID(event_id) if event_id else None,
+            page=page, page_size=page_size, search=search, status=refund_status,
+        )
+        return Page(items=items, total=total, page=page, page_size=page_size)
     if event_id is None:
         return await service.list_refunds()
     return await service.list_refunds(uuid.UUID(event_id))

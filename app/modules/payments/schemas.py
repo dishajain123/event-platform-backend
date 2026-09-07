@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
 
-from app.modules.payments.models import DiscountType, PaymentStatus, RefundStatus
+from app.modules.payments.models import DiscountType, PaymentStatus, RefundStatus, WebhookProcessingStatus
 
 
 class PaymentInitiateIn(BaseModel):
@@ -50,6 +50,10 @@ class PaymentOut(BaseModel):
     captured_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    reconciliation_status: str
+    reconciliation_attempts: int
+    last_reconciled_at: datetime | None
+    reconciliation_error: str | None
 
 
 class DiscountCodeIn(BaseModel):
@@ -95,6 +99,26 @@ class RefundOut(BaseModel):
     rejected_by: uuid.UUID | None
     gateway_refund_id: str | None
     approved_at: datetime | None
+    processed_at: datetime | None
+    failure_reason: str | None
+    created_at: datetime
+    updated_at: datetime
+    reconciliation_attempts: int
+    last_reconciled_at: datetime | None
+    reconciliation_error: str | None
+
+
+class PaymentWebhookInboxOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    provider_event_id: str
+    provider: str
+    event_type: str
+    received_at: datetime
+    processing_status: WebhookProcessingStatus
+    attempts: int
+    failure_reason: str | None
     processed_at: datetime | None
     created_at: datetime
     updated_at: datetime

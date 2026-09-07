@@ -41,6 +41,7 @@ class EventConfigurationIn(BaseModel):
     capacity: int | None = None
     volunteer_open: bool = True
     registration_end_at: datetime | None = None
+    cancellation_deadline_at: datetime | None = None
     approval_required: bool = False
     details: dict = Field(default_factory=dict)
     rules: dict = Field(default_factory=dict)
@@ -58,6 +59,7 @@ class EventConfigurationOut(BaseModel):
     capacity: int | None
     volunteer_open: bool
     registration_end_at: datetime | None = None
+    cancellation_deadline_at: datetime | None = None
     registered_count: int = 0
     available_capacity: int | None = None
     registration_status: str = "closed"

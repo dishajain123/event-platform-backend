@@ -2,7 +2,7 @@
 Identity endpoints — auth (used by both mobile app and console) and
 identity document management.
 """
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,7 @@ from app.modules.identity.schemas import (
     UserOut,
     UserUpdateIn,
 )
+from app.core.pagination import Page
 from app.modules.identity.service import IdentityService
 from app.modules.rbac.models import RoleName
 from app.redis_client import get_redis
@@ -39,10 +40,16 @@ def get_identity_service(
 
 @router.post("/auth/otp/request", response_model=OTPRequestOut)
 async def request_otp(
-    payload: OTPRequestIn, service: IdentityService = Depends(get_identity_service)
+    payload: OTPRequestIn,
+    request: Request,
+    service: IdentityService = Depends(get_identity_service),
 ) -> OTPRequestOut:
     """Called by: both mobile app (visitor/staff signup+login) and console (staff login)."""
-    cooldown = await service.request_otp(payload.mobile_number)
+    cooldown = await service.request_otp(
+        payload.mobile_number,
+        client_ip=request.client.host if request.client else None,
+        device_id=request.headers.get("X-Device-ID"),
+    )
     return OTPRequestOut(
         message="OTP sent.",
         resend_available_in_seconds=cooldown,
@@ -113,12 +120,19 @@ async def find_or_create_user_for_admin_provisioning(
 
 @router.get(
     "/users/accounts",
-    response_model=list[AccountOut],
+    response_model=list[AccountOut] | Page[AccountOut],
     dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN, RoleName.FINANCE_ADMIN))],
 )
-async def list_accounts(service: IdentityService = Depends(get_identity_service)) -> list[AccountOut]:
+async def list_accounts(page: int | None = Query(None, ge=1), page_size: int = Query(25, ge=1, le=100), service: IdentityService = Depends(get_identity_service)) -> list[AccountOut] | Page[AccountOut]:
     """Called by: console account management."""
-    return [AccountOut.model_validate(account) for account in await service.list_accounts()]
+    if not isinstance(page, int):
+        page = None
+    if not isinstance(page_size, int):
+        page_size = 25
+    if page is None:
+        return [AccountOut.model_validate(account) for account in await service.list_accounts()]
+    items, total = await service.page_accounts(page=page, page_size=page_size)
+    return Page(items=[AccountOut.model_validate(account) for account in items], total=total, page=page, page_size=page_size)
 
 
 @router.patch(

@@ -1,7 +1,7 @@
 """Media upload and public event media endpoints."""
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -10,6 +10,7 @@ from app.modules.identity.models import User
 from app.modules.media.schemas import MediaOut, MediaPublishIn, MediaUploadIn
 from app.modules.media.service import MediaService
 from app.modules.rbac.models import RoleName
+from app.core.pagination import Page
 
 router = APIRouter(prefix="/events/{event_id}/media", tags=["media"])
 media_router = APIRouter(tags=["media"])
@@ -19,9 +20,11 @@ def get_media_service(db: AsyncSession = Depends(get_db)) -> MediaService:
     return MediaService(db)
 
 
-@router.get("", response_model=list[MediaOut])
+@router.get("", response_model=list[MediaOut] | Page[MediaOut])
 async def list_event_media(
     event_id: str,
+    page: int | None = Query(None, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
     current_user: User | None = Depends(get_current_user_optional),
     service: MediaService = Depends(get_media_service),
 ):
@@ -31,7 +34,14 @@ async def list_event_media(
     drafts too). See MediaService.list_event_media for why this can't
     just be "authenticated = sees everything."
     """
-    return await service.list_event_media(uuid.UUID(event_id), current_user)
+    if not isinstance(page, int):
+        page = None
+    if not isinstance(page_size, int):
+        page_size = 25
+    if page is None:
+        return await service.list_event_media(uuid.UUID(event_id), current_user)
+    items, total = await service.page_event_media(uuid.UUID(event_id), current_user, page=page, page_size=page_size)
+    return Page(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.post(

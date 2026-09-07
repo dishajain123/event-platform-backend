@@ -9,7 +9,11 @@ from sqlalchemy import select
 from app.modules.config_engine.service import ConfigEngineService
 from app.modules.events.service import EventService
 from app.modules.identity.models import User
-from app.modules.notifications.models import NotificationChannel, NotificationDeliveryStatus
+from app.modules.notifications.models import (
+    DeviceTokenPlatform,
+    NotificationChannel,
+    NotificationDeliveryStatus,
+)
 from app.modules.notifications.service import NotificationService
 from app.modules.rbac.models import Role, RoleAssignment, RoleName
 from app.modules.registrations.models import RegistrationStatus
@@ -144,6 +148,127 @@ async def test_recipient_can_mark_their_own_notification_read(db_session):
     # Someone else can't mark another person's notification read.
     with pytest.raises(PermissionDeniedError):
         await service.mark_read(notification.id, recipient_b)
+
+
+@pytest.mark.asyncio
+async def test_device_tokens_are_owned_and_support_multiple_devices(db_session):
+    event, coordinator, recipient_a, _ = await _make_event(db_session)
+    service = NotificationService(db_session)
+    first = await service.register_device(recipient_a, "token-a", DeviceTokenPlatform.ANDROID)
+    second = await service.register_device(recipient_a, "token-b", DeviceTokenPlatform.IOS)
+    assert first.id != second.id
+
+    updated = await service.register_device(recipient_a, "token-a", DeviceTokenPlatform.WEB)
+    assert updated.id == first.id
+    assert updated.platform == DeviceTokenPlatform.WEB
+
+    from app.exceptions import PermissionDeniedError
+
+    with pytest.raises(PermissionDeniedError):
+        await service.remove_device(coordinator, first.id)
+
+
+@pytest.mark.asyncio
+async def test_preferences_and_automated_confirmation_are_idempotent(db_session):
+    event, coordinator, recipient_a, _ = await _make_event(db_session)
+    service = NotificationService(db_session)
+    registration = await RegistrationService(db_session).create_registration(
+        event_id=event.id,
+        actor=recipient_a,
+        participation_type="individual",
+        date_of_birth=None,
+        child_id=None,
+        team_id=None,
+        documents_provided=[],
+        answers={},
+        participants=[],
+    )
+    registration.status = RegistrationStatus.CONFIRMED
+    await db_session.commit()
+
+    await service.update_preferences(recipient_a, {"registration_updates": False})
+    assert not await service._preference_enabled(recipient_a.id, "registration_confirmation")
+    assert await service.queue_automated_notifications() == []
+
+    await service.update_preferences(recipient_a, {"registration_updates": True})
+    first = await service.queue_automated_notifications()
+    second = await service.queue_automated_notifications()
+    assert len(first) == 1
+    assert second == []
+
+
+@pytest.mark.asyncio
+async def test_manual_recipient_ids_are_limited_to_event_registrants(db_session):
+    event, coordinator, recipient_a, recipient_b = await _make_event(db_session)
+    service = NotificationService(db_session)
+    await RegistrationService(db_session).create_registration(
+        event_id=event.id,
+        actor=recipient_a,
+        participation_type="individual",
+        date_of_birth=None,
+        child_id=None,
+        team_id=None,
+        documents_provided=[],
+        answers={},
+        participants=[],
+    )
+    from app.modules.notifications.exceptions import InvalidNotificationTargetError
+
+    with pytest.raises(InvalidNotificationTargetError):
+        await service.send_notifications(
+            actor=coordinator,
+            title="Scoped",
+            body="Only event participants",
+            channels=[NotificationChannel.PUSH],
+            event_id=event.id,
+            participation_types=[],
+            registration_statuses=[],
+            recipient_user_ids=[recipient_b.id],
+        )
+
+
+@pytest.mark.asyncio
+async def test_invalid_push_token_is_deactivated_and_delivery_is_failed(monkeypatch, db_session):
+    event, coordinator, recipient_a, _ = await _make_event(db_session)
+    service = NotificationService(db_session)
+    await RegistrationService(db_session).create_registration(
+        event_id=event.id,
+        actor=recipient_a,
+        participation_type="individual",
+        date_of_birth=None,
+        child_id=None,
+        team_id=None,
+        documents_provided=[],
+        answers={},
+        participants=[],
+    )
+    device = await service.register_device(recipient_a, "expired-token", DeviceTokenPlatform.ANDROID)
+
+    from app.integrations.notification_providers import NotificationProviderError
+    from app.modules.notifications.exceptions import NotificationDispatchError
+
+    class InvalidProvider:
+        async def send(self, **_kwargs):
+            raise NotificationProviderError("expired", invalid_recipient=True)
+
+    monkeypatch.setattr(
+        "app.modules.notifications.service.get_push_provider", lambda _settings: InvalidProvider()
+    )
+    with pytest.raises(NotificationDispatchError):
+        await service.send_notifications(
+            actor=coordinator,
+            title="Expired token",
+            body="This should fail safely.",
+            channels=[NotificationChannel.PUSH],
+            event_id=event.id,
+            participation_types=["individual"],
+            registration_statuses=[],
+            recipient_user_ids=[],
+        )
+    await db_session.refresh(device)
+    assert device.is_active is False
+    notifications = await service.list_my_notifications(recipient_a)
+    assert notifications[0].delivery_status == NotificationDeliveryStatus.FAILED
 
 
 def test_notification_read_endpoint_is_registered():
