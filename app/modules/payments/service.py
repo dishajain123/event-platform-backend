@@ -261,6 +261,12 @@ class PaymentService:
             payment = result.scalar_one_or_none()
             if payment is None:
                 raise PaymentNotFoundError("Payment not found.")
+            provider_amount = payment_entity.get("amount")
+            if provider_amount is not None and int(provider_amount) != int(Decimal(payment.amount) * 100):
+                raise PaymentVerificationFailedError("Webhook payment amount does not match the local order.")
+            provider_currency = payment_entity.get("currency")
+            if provider_currency is not None and provider_currency != payment.currency:
+                raise PaymentVerificationFailedError("Webhook payment currency does not match the local order.")
             if payment.status != PaymentStatus.REFUNDED:
                 payment = await self._verify_payment(
                     payment,

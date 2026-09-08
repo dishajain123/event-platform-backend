@@ -123,6 +123,7 @@ class CheckIn(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "check_ins"
     __table_args__ = (
         UniqueConstraint("ticket_id", "entry_number", name="uq_checkin_ticket_entry"),
+        Index("ix_checkins_event_created", "event_id", "created_at"),
         Index("uq_checkins_offline_batch_id", "offline_batch_id", unique=True, postgresql_where=text("offline_batch_id IS NOT NULL")),
     )
 

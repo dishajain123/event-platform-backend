@@ -121,7 +121,7 @@ class Venue(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     latitude: Mapped[float | None] = mapped_column(Numeric(9, 6), default=None)
     longitude: Mapped[float | None] = mapped_column(Numeric(9, 6), default=None)
     capacity: Mapped[int | None] = mapped_column(Integer, default=None)
-    availability: Mapped[list | None] = mapped_column(JSON, default=list)
+    availability: Mapped[list] = mapped_column(JSON, default=list, nullable=False, server_default="[]")
     is_shared: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     event: Mapped["Event"] = relationship(back_populates="venues")

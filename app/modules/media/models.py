@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType
@@ -19,6 +19,7 @@ class MediaType(StrEnum):
 
 class Media(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "media"
+    __table_args__ = (Index("ix_media_event_sort_created", "event_id", "sort_order", "created_at"),)
 
     event_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("events.id"), nullable=False)
     uploaded_by: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("users.id"), nullable=False)

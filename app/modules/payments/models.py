@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType
@@ -55,7 +55,7 @@ class DiscountCode(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 class Payment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "payments"
-    __table_args__ = (UniqueConstraint("registration_id", name="uq_payment_registration"),)
+    __table_args__ = (UniqueConstraint("registration_id", name="uq_payment_registration"), Index("ix_payments_event_created", "event_id", "created_at"))
 
     event_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("events.id"), nullable=False)
     registration_id: Mapped[uuid.UUID] = mapped_column(
@@ -84,6 +84,7 @@ class Payment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 class Refund(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "refunds"
+    __table_args__ = (Index("ix_refunds_payment_status", "payment_id", "status"),)
 
     payment_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("payments.id"), nullable=False)
     requested_by: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("users.id"), nullable=False)

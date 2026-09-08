@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType
@@ -20,7 +20,10 @@ class AssistanceRequestStatus(StrEnum):
 
 class AssistanceRequest(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "assistance_requests"
-    __table_args__ = (UniqueConstraint("registration_id", name="uq_assistance_registration"),)
+    __table_args__ = (
+        UniqueConstraint("registration_id", name="uq_assistance_request_registration"),
+        Index("ix_assistance_requests_event_created", "event_id", "created_at"),
+    )
 
     event_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("events.id"), nullable=False)
     registration_id: Mapped[uuid.UUID] = mapped_column(

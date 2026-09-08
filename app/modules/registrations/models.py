@@ -9,7 +9,7 @@ import uuid
 from datetime import date, datetime
 from enum import StrEnum
 
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Date, DateTime, Enum, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType
@@ -59,6 +59,7 @@ class Registration(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "participation_type",
             name="uq_registration_identity",
         ),
+        Index("ix_registrations_event_created", "event_id", "created_at"),
     )
 
     event_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("events.id"), nullable=False)
@@ -107,6 +108,7 @@ class Registration(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 class RegistrationParticipant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "registration_participants"
+    __table_args__ = (Index("ix_registration_participants_name", "full_name"),)
 
     registration_id: Mapped[uuid.UUID] = mapped_column(
         UUIDType, ForeignKey("registrations.id"), nullable=False

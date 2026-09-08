@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, Enum, ForeignKey, JSON, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType
@@ -31,6 +31,7 @@ class StaffAssignmentStatus(StrEnum):
 
 class StaffAssignment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "staff_assignments"
+    __table_args__ = (Index("ix_staff_assignments_event_created", "event_id", "created_at"),)
 
     event_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("events.id"), nullable=False)
     venue_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType, ForeignKey("venues.id"), default=None)

@@ -121,7 +121,10 @@ class CompetitionStage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 class Entry(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "entries"
-    __table_args__ = (UniqueConstraint("competition_id", "registration_id", name="uq_entry_competition_registration"),)
+    __table_args__ = (
+        UniqueConstraint("competition_id", "registration_id", name="uq_entry_competition_registration"),
+        Index("ix_entries_stage_created", "current_stage_id", "created_at"),
+    )
 
     event_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("events.id"), nullable=False)
     competition_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType, ForeignKey("competitions.id"), default=None, index=True)

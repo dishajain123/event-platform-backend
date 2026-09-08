@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType
@@ -44,7 +44,7 @@ ALLOWED_VOLUNTEER_TRANSITIONS = {
 
 class VolunteerApplication(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "volunteer_applications"
-    __table_args__ = (UniqueConstraint("event_id", "user_id", "application_type", name="uq_volunteer_application_event_user_type"),)
+    __table_args__ = (UniqueConstraint("event_id", "user_id", "application_type", name="uq_volunteer_application_event_user_type"), Index("ix_volunteer_applications_event_created", "event_id", "created_at"))
 
     event_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("events.id"), nullable=False, index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("users.id"), nullable=False, index=True)

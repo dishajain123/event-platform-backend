@@ -6,7 +6,7 @@ directly, so the write path is centralized even though the table
 """
 import uuid
 
-from sqlalchemy import JSON, String
+from sqlalchemy import Index, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType
@@ -14,6 +14,7 @@ from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDT
 
 class AuditLog(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "audit_logs"
+    __table_args__ = (Index("ix_audit_entity_created", "entity_type", "entity_id", "created_at"),)
 
     entity_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     entity_id: Mapped[uuid.UUID] = mapped_column(UUIDType, nullable=False, index=True)

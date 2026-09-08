@@ -94,7 +94,7 @@ class SponsorshipInquiry(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 class SponsorshipInquiryEvent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "sponsorship_inquiry_events"
-    __table_args__ = (UniqueConstraint("inquiry_id", "event_id", name="uq_sponsorship_inquiry_event"),)
+    __table_args__ = (UniqueConstraint("inquiry_id", "event_id", name="uq_sponsorship_inquiry_event"), Index("ix_sponsorship_inquiry_events_event_inquiry", "event_id", "inquiry_id"))
 
     inquiry_id: Mapped[uuid.UUID] = mapped_column(
         UUIDType, ForeignKey("sponsorship_inquiries.id"), nullable=False, index=True

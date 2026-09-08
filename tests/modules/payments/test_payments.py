@@ -15,6 +15,7 @@ from app.modules.config_engine.service import ConfigEngineService
 from app.modules.events.service import EventService
 from app.modules.identity.models import User
 from app.modules.payments.models import PaymentStatus, PaymentWebhookInbox, RefundStatus, WebhookProcessingStatus
+from app.modules.payments.exceptions import PaymentVerificationFailedError
 from app.modules.payments.service import PaymentService
 from app.modules.rbac.models import Role, RoleAssignment, RoleName
 from app.modules.registrations.service import RegistrationService
@@ -262,6 +263,42 @@ async def test_razorpay_webhook_is_durable_and_idempotent(db_session):
     assert inbox.processing_status == WebhookProcessingStatus.PROCESSED
     assert inbox.attempts == 1
     assert await TicketService(db_session).tickets.get_by_registration_id(context["registration"].id) is not None
+
+
+@pytest.mark.asyncio
+async def test_webhook_amount_mismatch_is_rejected_before_confirmation(db_session):
+    context = await _make_paid_registration(db_session)
+    payload = {
+        "id": "evt_payment_amount_mismatch",
+        "event": "payment.captured",
+        "payload": {
+            "payment": {
+                "entity": {
+                    "id": "pay_amount_mismatch",
+                    "order_id": context["payment"].gateway_order_id,
+                    "amount": 1,
+                    "currency": "INR",
+                }
+            }
+        },
+    }
+    body = json.dumps(payload).encode()
+
+    with pytest.raises(PaymentVerificationFailedError):
+        await PaymentService(db_session).handle_gateway_webhook(
+            body, _webhook_signature(body), payload
+        )
+
+    await db_session.refresh(context["payment"])
+    assert context["payment"].status == PaymentStatus.INITIATED
+    inbox = (
+        await db_session.execute(
+            select(PaymentWebhookInbox).where(
+                PaymentWebhookInbox.provider_event_id == "evt_payment_amount_mismatch"
+            )
+        )
+    ).scalar_one()
+    assert inbox.processing_status == WebhookProcessingStatus.FAILED
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@
 import uuid
 from enum import StrEnum
 
-from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType
@@ -39,6 +39,7 @@ class EventFeedback(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "category",
             name="uq_event_feedback_user_category",
         ),
+        Index("ix_feedback_event_created", "event_id", "created_at"),
     )
 
     event_id: Mapped[uuid.UUID] = mapped_column(UUIDType, ForeignKey("events.id"), nullable=False, index=True)
