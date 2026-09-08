@@ -191,3 +191,30 @@ async def test_user_can_list_their_own_identity_documents_after_uploading(db_ses
     docs = await service.list_identity_documents(user.id)
     assert len(docs) == 1
     assert docs[0].document_type == DocumentType.AADHAAR
+
+
+@pytest.mark.asyncio
+async def test_paginated_accounts_include_role_status_for_console_contract(db_session, fake_redis):
+    from sqlalchemy import select
+
+    from app.modules.identity.models import User
+    from app.modules.rbac.models import Role, RoleAssignment, RoleName
+
+    user = User(mobile_number="+919700000003", name="Console User")
+    db_session.add(user)
+    await db_session.flush()
+    role = (await db_session.execute(select(Role).where(Role.name == RoleName.FINANCE_AUDITOR))).scalar_one()
+    db_session.add(RoleAssignment(user_id=user.id, role_id=role.id))
+    await db_session.commit()
+
+    items, total = await IdentityService(db_session, fake_redis).page_accounts(page=1, page_size=25)
+
+    account = next(item for item in items if item["id"] == user.id)
+    assert total >= 1
+    assert account["roles"] == [
+        {
+            "role_name": RoleName.FINANCE_AUDITOR,
+            "event_id": None,
+            "status": "active",
+        }
+    ]

@@ -359,7 +359,13 @@ class IdentityService:
                     continue
                 role = await self.rbac.roles.get_by_id(assignment.role_id)
                 if role:
-                    roles.append({"role_name": role.name, "event_id": assignment.event_id})
+                    roles.append(
+                        {
+                            "role_name": role.name,
+                            "event_id": assignment.event_id,
+                            "status": assignment.status.value,
+                        }
+                    )
             results.append({"id": user.id, "mobile_number": user.mobile_number, "name": user.name, "email": user.email, "is_active": user.is_active, "roles": roles})
         return results, total
 
