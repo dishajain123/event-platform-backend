@@ -53,6 +53,7 @@ class EventService:
         main_category_id: uuid.UUID | None = None,
         sub_category_id: uuid.UUID | None = None,
         require_sub_category: bool = True,
+        allow_inactive: bool = False,
     ) -> dict[str, uuid.UUID | str | None]:
         if main_category_id is None and sub_category_id is None:
             return {
@@ -68,20 +69,20 @@ class EventService:
             main_category = await self.main_categories.get_by_id(main_category_id)
             if main_category is None:
                 raise MainCategoryNotFoundError("Main category not found.")
-            if not main_category.is_active:
+            if not allow_inactive and not main_category.is_active:
                 raise InvalidCategoryRelationshipError("The selected main category is inactive.")
 
         if sub_category_id is not None:
             sub_category = await self.sub_categories.get_by_id(sub_category_id)
             if sub_category is None:
                 raise SubCategoryNotFoundError("Sub category not found.")
-            if not sub_category.is_active:
+            if not allow_inactive and not sub_category.is_active:
                 raise InvalidCategoryRelationshipError("The selected sub category is inactive.")
             if main_category is None:
                 main_category = await self.main_categories.get_by_id(sub_category.main_category_id)
                 if main_category is None:
                     raise MainCategoryNotFoundError("Main category not found.")
-                if not main_category.is_active:
+                if not allow_inactive and not main_category.is_active:
                     raise InvalidCategoryRelationshipError("The selected main category is inactive.")
             elif sub_category.main_category_id != main_category.id:
                 raise InvalidCategoryRelationshipError(
@@ -356,7 +357,16 @@ class EventService:
             EventStatus.REGISTRATION_CLOSED,
             EventStatus.LIVE,
             EventStatus.COMPLETED,
-        }:
+        } and (
+            (event.main_category is None or event.main_category.is_active)
+            and (
+                event.sub_category is None
+                or (
+                    event.sub_category.is_active
+                    and event.main_category_id == event.sub_category.main_category_id
+                )
+            )
+        ):
             return event
 
         raise PermissionDeniedError("You don't have permission to view this event.")
@@ -454,6 +464,7 @@ class EventService:
             main_category_id=main_category_id,
             sub_category_id=sub_category_id,
             require_sub_category=False,
+            allow_inactive=include_all_statuses,
         )
         if include_all_statuses:
             events = await self.events.list_all(

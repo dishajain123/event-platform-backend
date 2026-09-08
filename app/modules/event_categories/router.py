@@ -1,10 +1,12 @@
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_role
+from app.core.permissions import user_has_global_role
+from app.dependencies import get_current_user, get_current_user_optional, require_role
+from app.exceptions import PermissionDeniedError
 from app.modules.event_categories.schemas import (
     MainCategoryCreateIn,
     MainCategoryOut,
@@ -26,10 +28,20 @@ def get_event_category_service(db: AsyncSession = Depends(get_db)) -> EventCateg
 
 @router.get("/main", response_model=list[MainCategoryOut])
 async def list_main_categories(
-    _current_user: User = Depends(get_current_user),
+    include_inactive: bool = Query(False),
+    _current_user: User | None = Depends(get_current_user_optional),
     service: EventCategoryService = Depends(get_event_category_service),
 ):
-    return await service.list_main_categories()
+    if include_inactive and (
+        _current_user is None
+        or not await user_has_global_role(
+            service.db,
+            _current_user.id,
+            {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
+        )
+    ):
+        raise PermissionDeniedError("Only operations staff can view inactive categories.")
+    return await service.list_main_categories(include_inactive=include_inactive)
 
 
 @router.post(
@@ -76,10 +88,22 @@ async def delete_main_category(
 @router.get("/sub", response_model=list[SubCategoryOut])
 async def list_sub_categories(
     main_category_id: uuid.UUID | None = None,
-    _current_user: User = Depends(get_current_user),
+    include_inactive: bool = Query(False),
+    _current_user: User | None = Depends(get_current_user_optional),
     service: EventCategoryService = Depends(get_event_category_service),
 ):
-    return await service.list_sub_categories(main_category_id=main_category_id)
+    if include_inactive and (
+        _current_user is None
+        or not await user_has_global_role(
+            service.db,
+            _current_user.id,
+            {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN},
+        )
+    ):
+        raise PermissionDeniedError("Only operations staff can view inactive categories.")
+    return await service.list_sub_categories(
+        main_category_id=main_category_id, include_inactive=include_inactive
+    )
 
 
 @router.post(

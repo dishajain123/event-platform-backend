@@ -89,7 +89,7 @@ The migration head creates and updates all registered module tables, including e
 
 ```bash
 source venv/bin/activate
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
 The versioned API prefix is `/api/v1`. OpenAPI documentation is available at `/docs` and `/redoc`.

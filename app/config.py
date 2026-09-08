@@ -18,7 +18,12 @@ class Settings(BaseSettings):
     environment: str = "development"
     app_name: str = "event-platform-backend"
     api_v1_prefix: str = "/api/v1"
-    cors_allowed_origins: str = "http://localhost:3000,http://localhost:5173"
+    # Cover the standard local web dev origins. Production deployments must
+    # override this with their exact deployed origins.
+    cors_allowed_origins: str = (
+        "http://localhost:3000,http://localhost:5173,"
+        "http://127.0.0.1:3000,http://127.0.0.1:5173"
+    )
     trusted_hosts: str = ""
 
     # ---- Database ----

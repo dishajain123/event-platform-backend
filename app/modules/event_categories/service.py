@@ -71,13 +71,25 @@ class EventCategoryService:
             raise SubCategoryNotFoundError("Sub category not found.")
         return category
 
-    async def list_main_categories(self) -> list[MainCategory]:
-        return await self.main_categories.list_all(include_sub_categories=True)
+    async def list_main_categories(self, *, include_inactive: bool = False) -> list[MainCategory]:
+        categories = await self.main_categories.list_all(
+            include_sub_categories=True, include_inactive=include_inactive
+        )
+        if not include_inactive:
+            for category in categories:
+                category.sub_categories = [
+                    sub_category
+                    for sub_category in category.sub_categories
+                    if sub_category.is_active
+                ]
+        return categories
 
-    async def list_sub_categories(self, main_category_id: uuid.UUID | None = None) -> list[SubCategory]:
+    async def list_sub_categories(self, main_category_id: uuid.UUID | None = None, *, include_inactive: bool = False) -> list[SubCategory]:
         if main_category_id is not None:
             await self.get_main_category_or_raise(main_category_id)
-        return await self.sub_categories.list_all(main_category_id=main_category_id)
+        return await self.sub_categories.list_all(
+            main_category_id=main_category_id, include_inactive=include_inactive
+        )
 
     async def create_main_category(self, actor_user_id: uuid.UUID, **fields) -> MainCategory:
         await self._ensure_main_category_name_is_unique(fields["name"])

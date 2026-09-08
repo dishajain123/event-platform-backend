@@ -2,6 +2,7 @@
 import uuid
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.notifications.models import (
@@ -23,8 +24,30 @@ class NotificationRepository:
             if existing is not None:
                 return existing
         notification = Notification(**kwargs)
-        self.db.add(notification)
-        await self.db.flush()
+        try:
+            # A SAVEPOINT (not the outer transaction) around just this
+            # insert: several callers create many notifications in one
+            # Python loop before a single final commit (see
+            # NotificationService.queue_automated_notifications). A
+            # concurrent caller (e.g. an overlapping scheduled-task run)
+            # can win the same dedupe_key between our check above and this
+            # flush — the unique constraint on dedupe_key is what actually
+            # guarantees no duplicate, the pre-check above is only an
+            # optimization to skip the round-trip in the common case. If
+            # we let that IntegrityError propagate and rolled back the
+            # whole session to recover, every other notification already
+            # flushed earlier in the same loop/transaction would be lost
+            # too, not just the one genuine duplicate. A nested
+            # transaction (SAVEPOINT) confines the rollback to just this
+            # one row.
+            async with self.db.begin_nested():
+                self.db.add(notification)
+                await self.db.flush()
+        except IntegrityError:
+            existing = await self.get_by_dedupe_key(dedupe_key) if dedupe_key else None
+            if existing is not None:
+                return existing
+            raise
         return notification
 
     async def get_by_id(self, notification_id: uuid.UUID) -> Notification | None:

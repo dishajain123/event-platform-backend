@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.audit import write_audit_log
 from app.exceptions import PermissionDeniedError
+from app.exceptions import ConflictError
 from app.exceptions import RateLimitedError
 from app.modules.identity.exceptions import (
     InvalidOTPError,
@@ -29,7 +30,7 @@ from app.modules.identity.phone import normalize_mobile_number
 from app.modules.rbac.models import AssignmentStatus, RoleName
 from app.modules.rbac.repository import RoleAssignmentRepository
 from app.modules.rbac.service import RBACService
-from app.security import TokenType, create_token, generate_otp, hash_otp
+from app.security import TokenType, create_token, generate_otp, hash_otp, hash_password, verify_password
 
 settings = get_settings()
 
@@ -44,6 +45,18 @@ def _otp_cooldown_key(mobile_number: str) -> str:
 
 def _otp_attempts_key(mobile_number: str) -> str:
     return f"otp:attempts:{mobile_number}"
+
+
+def _email_code_key(purpose: str, email: str) -> str:
+    return f"auth:email-code:{purpose}:{email.strip().lower()}"
+
+
+def _email_code_attempts_key(purpose: str, email: str) -> str:
+    return f"auth:email-code-attempts:{purpose}:{email.strip().lower()}"
+
+
+def _email_code_cooldown_key(purpose: str, email: str) -> str:
+    return f"auth:email-code-cooldown:{purpose}:{email.strip().lower()}"
 
 
 def _request_limit_key(kind: str, value: str) -> str:
@@ -154,10 +167,125 @@ class IdentityService:
         await self.db.commit()
         return user
 
+    async def _send_email_code(self, email: str, purpose: str) -> int:
+        cooldown_key = _email_code_cooldown_key(purpose, email)
+        if await self.redis.get(cooldown_key):
+            ttl = await self.redis.ttl(cooldown_key)
+            raise OTPResendTooSoonError(f"Please wait {ttl} seconds before requesting another code.")
+        if not await _claim_rate_limit(self.redis, cooldown_key, settings.otp_resend_cooldown_seconds):
+            ttl = await self.redis.ttl(cooldown_key)
+            raise OTPResendTooSoonError(f"Please wait {ttl} seconds before requesting another code.")
+        code = generate_otp()
+        await self.redis.set(
+            _email_code_key(purpose, email),
+            hash_otp(code, email),
+            ex=settings.otp_expiry_seconds,
+        )
+        await self.redis.delete(_email_code_attempts_key(purpose, email))
+        from app.integrations.email_provider import send_password_reset_email, send_verification_email
+
+        if purpose == "verify":
+            await send_verification_email(email, code)
+        else:
+            await send_password_reset_email(email, code)
+        return settings.otp_resend_cooldown_seconds
+
+    async def signup_with_email(self, email: str, password: str) -> int:
+        normalized = email.strip().lower()
+        if await self.users.get_by_email(normalized):
+            raise ConflictError("An account already exists for that email address.")
+        user = User(email=normalized, password_hash=hash_password(password))
+        self.db.add(user)
+        await self.db.flush()
+        await self.db.commit()
+        return await self._send_email_code(normalized, "verify")
+
+    async def verify_email_signup(self, email: str, code: str) -> User:
+        normalized = email.strip().lower()
+        user = await self.users.get_by_email(normalized)
+        if user is None or user.password_hash is None:
+            raise InvalidOTPError("Invalid verification code.")
+        await self._verify_email_code(normalized, code, "verify")
+        from datetime import datetime, timezone
+
+        user.email_verified_at = datetime.now(timezone.utc)
+        await self.db.commit()
+        await self.db.refresh(user)
+        return user
+
+    async def resend_email_verification(self, email: str) -> int:
+        normalized = email.strip().lower()
+        user = await self.users.get_by_email(normalized)
+        if user is None or user.password_hash is None or user.email_verified_at is not None:
+            return settings.otp_resend_cooldown_seconds
+        return await self._send_email_code(normalized, "verify")
+
+    async def login_with_email(self, email: str, password: str) -> User:
+        user = await self.users.get_by_email(email.strip().lower())
+        if user is None or not verify_password(password, user.password_hash):
+            raise PermissionDeniedError("Invalid email or password.")
+        if not user.is_active:
+            raise PermissionDeniedError("This account is inactive.")
+        if user.email_verified_at is None:
+            raise PermissionDeniedError("Verify your email before signing in.")
+        return user
+
+    async def _verify_email_code(self, email: str, code: str, purpose: str) -> None:
+        attempts_key = _email_code_attempts_key(purpose, email)
+        if int(await self.redis.get(attempts_key) or 0) >= settings.otp_max_verify_attempts:
+            raise TooManyOTPAttemptsError("Too many incorrect attempts. Please request a new code.")
+        stored = await self.redis.get(_email_code_key(purpose, email))
+        if stored is None:
+            raise OTPExpiredError("This code has expired. Please request a new one.")
+        if hash_otp(code, email) != stored:
+            await self.redis.incr(attempts_key)
+            await self.redis.expire(attempts_key, settings.otp_expiry_seconds)
+            raise InvalidOTPError("Incorrect verification code.")
+        await self.redis.delete(_email_code_key(purpose, email))
+        await self.redis.delete(attempts_key)
+
+    async def request_password_reset(self, email: str) -> int:
+        normalized = email.strip().lower()
+        user = await self.users.get_by_email(normalized)
+        # Do not reveal whether an email is registered. The caller receives
+        # the same success-shaped response either way.
+        if user is None or user.password_hash is None:
+            return settings.otp_resend_cooldown_seconds
+        return await self._send_email_code(normalized, "reset")
+
+    async def reset_password(self, email: str, code: str, new_password: str) -> None:
+        normalized = email.strip().lower()
+        user = await self.users.get_by_email(normalized)
+        if user is None or user.password_hash is None:
+            raise InvalidOTPError("Invalid or expired reset code.")
+        await self._verify_email_code(normalized, code, "reset")
+        user.password_hash = hash_password(new_password)
+        await self.db.commit()
+
     def issue_tokens(self, user_id: uuid.UUID) -> tuple[str, str]:
         access = create_token(user_id, TokenType.ACCESS)
         refresh = create_token(user_id, TokenType.REFRESH)
         return access, refresh
+
+    async def revoke_token(self, token: str) -> None:
+        """Revoke a refresh token until its natural expiry."""
+        import jwt
+
+        from app.security import token_revocation_key
+
+        try:
+            claims = jwt.decode(
+                token,
+                settings.jwt_secret_key,
+                algorithms=[settings.jwt_algorithm],
+                options={"verify_exp": False},
+            )
+        except jwt.PyJWTError:
+            return
+        if claims.get("type") not in {TokenType.ACCESS.value, TokenType.REFRESH.value} or not claims.get("jti"):
+            return
+        ttl = max(1, int(claims.get("exp", time.time()) - time.time()))
+        await self.redis.set(token_revocation_key(claims["jti"]), "1", ex=ttl)
 
     # ---- User lookup ----
 
@@ -299,7 +427,13 @@ class IdentityService:
         if name is not None:
             actor.name = name
         if email is not None:
-            actor.email = email
+            normalized_email = email.strip().lower()
+            existing = await self.users.get_by_email(normalized_email)
+            if existing is not None and existing.id != actor.id:
+                raise ConflictError("That email address is already linked to another account.")
+            if actor.email != normalized_email:
+                actor.email = normalized_email
+                actor.email_verified_at = None
         await write_audit_log(
             self.db,
             entity_type="user",

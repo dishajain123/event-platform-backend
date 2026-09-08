@@ -14,6 +14,7 @@ logger = logging.getLogger("request")
 
 def register_middleware(app: FastAPI) -> None:
     settings = get_settings()
+    is_development = settings.environment.lower() in {"development", "dev", "test", "local"}
     allowed_origins = [origin.strip() for origin in settings.cors_allowed_origins.split(",") if origin.strip()]
     if settings.environment.lower() in {"production", "prod"} and "*" in allowed_origins:
         raise RuntimeError("Wildcard CORS origins are not allowed in production.")
@@ -28,10 +29,21 @@ def register_middleware(app: FastAPI) -> None:
         )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allowed_origins,
+        # Local development may use a browser, emulator bridge, or a
+        # dynamically assigned dev-server port. Accept those origins only
+        # outside production; production remains explicitly allow-listed.
+        allow_origins=["*"] if is_development else allowed_origins,
+        allow_origin_regex=None,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "Accept",
+            "X-Request-ID",
+            "X-Device-ID",
+            "X-Client-Version",
+        ],
         expose_headers=["X-Request-ID"],
     )
 

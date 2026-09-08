@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.modules.events.models import Event, EventStatus, EventTemplate, ScheduleItem, ScheduleStatus, Sponsor, SponsorStatus, Venue
+from app.modules.event_categories.models import MainCategory, SubCategory
 
 
 class EventRepository:
@@ -56,6 +57,24 @@ class EventRepository:
         stmt = stmt.where(Event.status.in_(visible_statuses)).execution_options(
             populate_existing=True
         )
+        # Public discovery must not leak events whose taxonomy has been
+        # deactivated. Outer joins preserve legacy uncategorized events while
+        # keeping configured category relationships authoritative.
+        stmt = (
+            stmt.outerjoin(MainCategory, Event.main_category_id == MainCategory.id)
+            .outerjoin(SubCategory, Event.sub_category_id == SubCategory.id)
+            .where(
+                or_(Event.main_category_id.is_(None), MainCategory.is_active.is_(True)),
+                or_(
+                    Event.sub_category_id.is_(None),
+                    and_(
+                        SubCategory.is_active.is_(True),
+                        SubCategory.main_category_id == Event.main_category_id,
+                    ),
+                ),
+            )
+            .order_by(Event.start_date.asc(), Event.created_at.desc(), Event.id.desc())
+        )
         if main_category_id is not None:
             stmt = stmt.where(Event.main_category_id == main_category_id)
         if sub_category_id is not None:
@@ -88,6 +107,16 @@ class EventRepository:
         filters = []
         if not include_all_statuses:
             filters.append(Event.status.in_([EventStatus.PUBLISHED, EventStatus.REGISTRATION_OPEN, EventStatus.REGISTRATION_CLOSED, EventStatus.LIVE, EventStatus.COMPLETED]))
+            filters.extend([
+                or_(Event.main_category_id.is_(None), MainCategory.is_active.is_(True)),
+                or_(
+                    Event.sub_category_id.is_(None),
+                    and_(
+                        SubCategory.is_active.is_(True),
+                        SubCategory.main_category_id == Event.main_category_id,
+                    ),
+                ),
+            ])
         if main_category_id is not None:
             filters.append(Event.main_category_id == main_category_id)
         if sub_category_id is not None:
@@ -96,8 +125,13 @@ class EventRepository:
             filters.append(Event.status == status)
         if search:
             filters.append(Event.name.ilike(f"%{search.strip()}%"))
-        total = await self.db.scalar(select(func.count(Event.id)).where(*filters)) or 0
+        count_stmt = select(func.count(Event.id)).where(*filters)
+        if not include_all_statuses:
+            count_stmt = count_stmt.outerjoin(MainCategory, Event.main_category_id == MainCategory.id).outerjoin(SubCategory, Event.sub_category_id == SubCategory.id)
+        total = await self.db.scalar(count_stmt) or 0
         stmt = select(Event).options(selectinload(Event.main_category), selectinload(Event.sub_category), selectinload(Event.organizer), selectinload(Event.configuration)).where(*filters)
+        if not include_all_statuses:
+            stmt = stmt.outerjoin(MainCategory, Event.main_category_id == MainCategory.id).outerjoin(SubCategory, Event.sub_category_id == SubCategory.id)
         result = await self.db.execute(stmt.order_by(Event.created_at.desc(), Event.id.desc()).offset((page - 1) * page_size).limit(page_size))
         return list(result.scalars().all()), total
 

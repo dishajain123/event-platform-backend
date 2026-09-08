@@ -280,3 +280,106 @@ def test_notification_read_endpoint_is_registered():
         for method in getattr(route, "methods", set())
     }
     assert ("POST", "/api/v1/notifications/{notification_id}/read") in routes
+
+
+@pytest.mark.asyncio
+async def test_repository_create_survives_a_concurrent_dedupe_key_collision(db_session):
+    """
+    Regression test for a bug found in audit: NotificationRepository.create()
+    only guarded against a duplicate dedupe_key with a check-then-insert —
+    fine for the common single-caller case, but several callers (e.g.
+    NotificationService.queue_automated_notifications) create many
+    notifications in one Python loop sharing a single transaction before
+    one final commit. A genuine race (two overlapping runs of the same
+    scheduled task both passing the pre-check before either flushes) would
+    raise an unhandled IntegrityError on the DB's unique constraint — and
+    without a SAVEPOINT isolating just that one insert, recovering from it
+    would roll back the whole transaction, silently losing every other
+    notification already queued earlier in the same batch, not just the
+    one genuine duplicate.
+
+    Real concurrency can't be simulated against a single in-process SQLite
+    connection, so the race is forced deterministically instead: an
+    "existing" row is inserted directly (standing in for a concurrent
+    caller's already-committed insert), then get_by_dedupe_key is
+    monkeypatched to miss it exactly once (standing in for the exact race
+    window: our pre-check ran before the concurrent insert became
+    visible). create() must then recover from the flush's IntegrityError
+    by returning the real existing row — and an unrelated notification
+    added earlier in the same uncommitted transaction must still be
+    present afterward, proving the SAVEPOINT confined the rollback to
+    just the one colliding insert.
+    """
+    from app.modules.notifications.models import Notification
+    from app.modules.notifications.repository import NotificationRepository
+
+    creator = User(mobile_number="+919500000099")
+    recipient = User(mobile_number="+919500000098")
+    db_session.add_all([creator, recipient])
+    await db_session.flush()
+    start = datetime.now(timezone.utc) + timedelta(days=10)
+    event = await EventService(db_session).create_event(
+        created_by=creator.id, name="Notification Race Fixture", description=None,
+        category="test", start_date=start, end_date=start + timedelta(days=1), organization_id=None,
+    )
+
+    repo = NotificationRepository(db_session)
+
+    # Stands in for an earlier notification queued in the same batch
+    # transaction, not yet committed — must survive the collision below.
+    unrelated = await repo.create(
+        event_id=event.id, recipient_user_id=recipient.id, channel=NotificationChannel.PUSH,
+        title="Earlier queued notification", body="From earlier in the same batch run.",
+        target_metadata={}, delivery_status=NotificationDeliveryStatus.QUEUED,
+        notification_type="event_reminder", dedupe_key="race-test:unrelated-earlier",
+    )
+
+    # Stands in for a concurrent run's insert that's already real in the
+    # database by the time our create() call below reaches its flush.
+    existing_row = Notification(
+        event_id=event.id, recipient_user_id=recipient.id, channel=NotificationChannel.PUSH,
+        title="Inserted by a concurrent run", body="Won the race.", target_metadata={},
+        delivery_status=NotificationDeliveryStatus.QUEUED, notification_type="event_reminder",
+        dedupe_key="race-test:collision",
+    )
+    db_session.add(existing_row)
+    await db_session.flush()
+
+    # Force our pre-check to miss the row that's already there exactly
+    # once — this is the actual race window: two callers' pre-checks both
+    # ran before either's insert was visible to the other.
+    real_lookup = repo.get_by_dedupe_key
+    call_count = {"n": 0}
+
+    async def _pre_check_misses_once(key):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return None
+        return await real_lookup(key)
+
+    repo.get_by_dedupe_key = _pre_check_misses_once
+
+    recovered = await repo.create(
+        event_id=event.id, recipient_user_id=recipient.id, channel=NotificationChannel.PUSH,
+        title="Should be discarded in favor of the existing row", body="...",
+        target_metadata={}, delivery_status=NotificationDeliveryStatus.QUEUED,
+        notification_type="event_reminder", dedupe_key="race-test:collision",
+    )
+
+    # Recovered the real, already-existing row rather than raising or
+    # creating a second row for the same dedupe_key.
+    assert recovered.id == existing_row.id
+    assert recovered.title == "Inserted by a concurrent run"
+
+    # The notification queued earlier in the same uncommitted transaction
+    # must still be present — proving the SAVEPOINT confined the rollback
+    # to just the colliding insert, not the whole session.
+    still_there = await db_session.get(Notification, unrelated.id)
+    assert still_there is not None
+    assert still_there.title == "Earlier queued notification"
+
+    # And there is still exactly one row for the collided dedupe_key, not two.
+    result = await db_session.execute(
+        select(Notification).where(Notification.dedupe_key == "race-test:collision")
+    )
+    assert len(result.scalars().all()) == 1

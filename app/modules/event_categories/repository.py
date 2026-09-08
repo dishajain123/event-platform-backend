@@ -28,8 +28,10 @@ class MainCategoryRepository:
         result = await self.db.execute(select(MainCategory).where(MainCategory.name == name))
         return result.scalar_one_or_none()
 
-    async def list_all(self, *, include_sub_categories: bool = False) -> list[MainCategory]:
+    async def list_all(self, *, include_sub_categories: bool = False, include_inactive: bool = False) -> list[MainCategory]:
         stmt = select(MainCategory).order_by(MainCategory.name.asc())
+        if not include_inactive:
+            stmt = stmt.where(MainCategory.is_active.is_(True))
         if include_sub_categories:
             stmt = stmt.options(selectinload(MainCategory.sub_categories))
         result = await self.db.execute(stmt)
@@ -62,13 +64,14 @@ class SubCategoryRepository:
         )
         return result.scalar_one_or_none()
 
-    async def list_all(self, main_category_id: uuid.UUID | None = None) -> list[SubCategory]:
+    async def list_all(self, main_category_id: uuid.UUID | None = None, *, include_inactive: bool = False) -> list[SubCategory]:
         stmt = select(SubCategory).order_by(SubCategory.name.asc())
         if main_category_id is not None:
             stmt = stmt.where(SubCategory.main_category_id == main_category_id)
+        if not include_inactive:
+            stmt = stmt.where(SubCategory.is_active.is_(True))
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
     async def delete(self, category: SubCategory) -> None:
         await self.db.delete(category)
-

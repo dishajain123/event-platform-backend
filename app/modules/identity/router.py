@@ -3,6 +3,7 @@ Identity endpoints — auth (used by both mobile app and console) and
 identity document management.
 """
 from fastapi import APIRouter, Depends, Query, Request, status
+import jwt
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,12 +14,18 @@ from app.modules.identity.schemas import (
     AccountOut,
     AccountStatusUpdateIn,
     AdminUserLookupIn,
+    EmailCodeIn,
+    EmailLoginIn,
+    EmailSignupIn,
     IdentityDocumentIn,
     IdentityDocumentOut,
     OTPRequestIn,
     OTPRequestOut,
     OTPVerifyIn,
+    PasswordResetIn,
+    PasswordResetRequestIn,
     RefreshTokenIn,
+    LogoutIn,
     TokenPairOut,
     UserOut,
     UserUpdateIn,
@@ -27,7 +34,7 @@ from app.core.pagination import Page
 from app.modules.identity.service import IdentityService
 from app.modules.rbac.models import RoleName
 from app.redis_client import get_redis
-from app.security import TokenType, create_token, decode_token
+from app.security import TokenType, decode_token, token_revocation_key
 
 router = APIRouter(tags=["identity"])
 
@@ -66,27 +73,95 @@ async def verify_otp(
     return TokenPairOut(access_token=access, refresh_token=refresh)
 
 
-@router.post("/auth/refresh", response_model=TokenPairOut)
-async def refresh_token(payload: RefreshTokenIn) -> TokenPairOut:
-    """Called by: both. Exchanges a valid refresh token for a new access token."""
-    claims = decode_token(payload.refresh_token)
-    if claims.get("type") != TokenType.REFRESH.value:
-        from app.modules.identity.exceptions import InvalidTokenError
+@router.post("/auth/email/signup", response_model=OTPRequestOut, status_code=status.HTTP_201_CREATED)
+async def signup_email(
+    payload: EmailSignupIn,
+    service: IdentityService = Depends(get_identity_service),
+) -> OTPRequestOut:
+    cooldown = await service.signup_with_email(payload.email, payload.password)
+    return OTPRequestOut(message="Verification code sent.", resend_available_in_seconds=cooldown)
 
+
+@router.post("/auth/email/verify", response_model=TokenPairOut)
+async def verify_email_signup(
+    payload: EmailCodeIn,
+    service: IdentityService = Depends(get_identity_service),
+) -> TokenPairOut:
+    user = await service.verify_email_signup(payload.email, payload.code)
+    access, refresh = service.issue_tokens(user.id)
+    return TokenPairOut(access_token=access, refresh_token=refresh)
+
+
+@router.post("/auth/email/verify/resend", response_model=OTPRequestOut)
+async def resend_email_verification(
+    payload: PasswordResetRequestIn,
+    service: IdentityService = Depends(get_identity_service),
+) -> OTPRequestOut:
+    cooldown = await service.resend_email_verification(payload.email)
+    return OTPRequestOut(message="If the account is awaiting verification, a code was sent.", resend_available_in_seconds=cooldown)
+
+
+@router.post("/auth/email/login", response_model=TokenPairOut)
+async def login_email(
+    payload: EmailLoginIn,
+    service: IdentityService = Depends(get_identity_service),
+) -> TokenPairOut:
+    user = await service.login_with_email(payload.email, payload.password)
+    access, refresh = service.issue_tokens(user.id)
+    return TokenPairOut(access_token=access, refresh_token=refresh)
+
+
+@router.post("/auth/email/password-reset/request", response_model=OTPRequestOut)
+async def request_password_reset(
+    payload: PasswordResetRequestIn,
+    service: IdentityService = Depends(get_identity_service),
+) -> OTPRequestOut:
+    cooldown = await service.request_password_reset(payload.email)
+    return OTPRequestOut(message="If the account exists, a reset code was sent.", resend_available_in_seconds=cooldown)
+
+
+@router.post("/auth/email/password-reset", status_code=status.HTTP_204_NO_CONTENT)
+async def reset_password(
+    payload: PasswordResetIn,
+    service: IdentityService = Depends(get_identity_service),
+) -> None:
+    await service.reset_password(payload.email, payload.code, payload.new_password)
+
+
+@router.post("/auth/refresh", response_model=TokenPairOut)
+async def refresh_token(
+    payload: RefreshTokenIn,
+    service: IdentityService = Depends(get_identity_service),
+) -> TokenPairOut:
+    """Called by: both. Exchanges a valid refresh token for a new access token."""
+    from app.modules.identity.exceptions import InvalidTokenError
+
+    try:
+        claims = decode_token(payload.refresh_token)
+    except jwt.PyJWTError as exc:
+        raise InvalidTokenError("Invalid or expired refresh token.") from exc
+    if claims.get("type") != TokenType.REFRESH.value:
         raise InvalidTokenError("Not a refresh token.")
     import uuid as _uuid
-
-    new_access = create_token(_uuid.UUID(claims["sub"]), TokenType.ACCESS)
-    return TokenPairOut(access_token=new_access, refresh_token=payload.refresh_token)
+    if not claims.get("jti") or await service.redis.get(token_revocation_key(claims["jti"])):
+        raise InvalidTokenError("This session has been signed out.")
+    user = await service.get_user_or_raise(_uuid.UUID(claims["sub"]))
+    if not user.is_active:
+        raise InvalidTokenError("User not found or inactive.")
+    access, refresh = service.issue_tokens(user.id)
+    return TokenPairOut(access_token=access, refresh_token=refresh)
 
 
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
-async def logout() -> None:
+async def logout(payload: LogoutIn | None = None, service: IdentityService = Depends(get_identity_service)) -> None:
     """
-    Called by: both. Stateless JWTs mean logout is primarily a client-side
-    token-discard; a token-blocklist in Redis can be added here later if
-    server-side revocation becomes a requirement.
+    Called by both clients. The refresh token is revoked in Redis until its
+    natural expiry; clients still clear their local access/refresh tokens.
     """
+    if payload and payload.refresh_token:
+        await service.revoke_token(payload.refresh_token)
+    if payload and payload.access_token:
+        await service.revoke_token(payload.access_token)
     return None
 
 

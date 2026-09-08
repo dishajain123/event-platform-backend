@@ -77,7 +77,9 @@ class Team(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Check-in actually reference. Nullable only because a DRAFT/INVITING
     # team hasn't been submitted yet.
     registration_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUIDType, ForeignKey("registrations.id"), default=None
+        UUIDType,
+        ForeignKey("registrations.id", name="fk_teams_registration_id", use_alter=True),
+        default=None,
     )
 
     members: Mapped[list["TeamMember"]] = relationship(

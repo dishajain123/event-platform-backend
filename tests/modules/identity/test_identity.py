@@ -94,6 +94,50 @@ async def test_otp_ip_limit_is_enforced_without_exposing_identity(db_session, fa
         await service.request_otp("+919876543216", client_ip="198.51.100.10")
 
 @pytest.mark.asyncio
+async def test_email_signup_verification_and_password_login(db_session, fake_redis):
+    from app.security import hash_otp
+
+    service = IdentityService(db_session, fake_redis)
+    email = "person@example.com"
+    await service.signup_with_email(email, "correct horse battery")
+    fake_redis.store["auth:email-code:verify:person@example.com"] = (hash_otp("123456", email), None)
+    user = await service.verify_email_signup(email, "123456")
+    assert user.email_verified_at is not None
+    assert (await service.login_with_email(email, "correct horse battery")).id == user.id
+
+
+@pytest.mark.asyncio
+async def test_email_password_reset_requires_valid_expiring_code(db_session, fake_redis):
+    from app.security import hash_otp
+
+    service = IdentityService(db_session, fake_redis)
+    email = "reset@example.com"
+    await service.signup_with_email(email, "old password")
+    fake_redis.store["auth:email-code:verify:reset@example.com"] = (hash_otp("123456", email), None)
+    await service.verify_email_signup(email, "123456")
+    await service.request_password_reset(email)
+    fake_redis.store["auth:email-code:reset:reset@example.com"] = (hash_otp("654321", email), None)
+    await service.reset_password(email, "654321", "new password")
+    assert (await service.login_with_email(email, "new password")).email == email
+
+
+@pytest.mark.asyncio
+async def test_logout_revokes_access_and_refresh_tokens(db_session, fake_redis):
+    from app.security import token_revocation_key
+
+    service = IdentityService(db_session, fake_redis)
+    user = await service.users.create("+919700000099")
+    await db_session.commit()
+    access, refresh = service.issue_tokens(user.id)
+    await service.revoke_token(access)
+    await service.revoke_token(refresh)
+    from app.security import decode_token
+
+    assert await fake_redis.get(token_revocation_key(decode_token(access)["jti"])) is not None
+    assert await fake_redis.get(token_revocation_key(decode_token(refresh)["jti"])) is not None
+
+
+@pytest.mark.asyncio
 async def test_user_can_update_their_own_name_and_email(db_session, fake_redis):
     """
     Regression test for a real gap found while building the mobile app's

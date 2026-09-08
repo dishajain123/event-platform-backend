@@ -33,8 +33,12 @@ class UserRepository:
         result = await self.db.execute(select(User).where(User.mobile_number == normalized))
         return result.scalar_one_or_none()
 
-    async def create(self, mobile_number: str) -> User:
-        user = User(mobile_number=normalize_mobile_number(mobile_number))
+    async def get_by_email(self, email: str) -> User | None:
+        result = await self.db.execute(select(User).where(User.email == email.strip().lower()))
+        return result.scalar_one_or_none()
+
+    async def create(self, mobile_number: str | None) -> User:
+        user = User(mobile_number=normalize_mobile_number(mobile_number) if mobile_number else None)
         self.db.add(user)
         await self.db.flush()
         return user
@@ -47,7 +51,6 @@ class UserRepository:
         if existing:
             return existing, False
         return await self.create(normalized), True
-
 
 class IdentityDocumentRepository:
     def __init__(self, db: AsyncSession):

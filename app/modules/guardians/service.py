@@ -24,12 +24,29 @@ class GuardianService:
     async def create_child(
         self, guardian_user_id: uuid.UUID, full_name: str, date_of_birth, relationship_label: str
     ) -> ChildProfile:
+        # BUG FIX (found in audit): this used to create a brand-new
+        # ChildProfile row FIRST, then check whether the guardian already
+        # had a relationship to that same (just-created) child.id — which
+        # can never be true, since the id didn't exist a moment earlier.
+        # DuplicateGuardianRelationshipError could never actually fire,
+        # and nothing stopped a guardian from creating unlimited duplicate
+        # child profiles for the same real child (e.g. a double-tap
+        # submit, or repeatedly using "add child" for the same kid),
+        # fragmenting that child's registration/attendance history across
+        # separate profiles. There's no stronger identity signal available
+        # for a child who doesn't have their own account, so this checks
+        # for an existing profile already linked to this guardian with the
+        # same name and date of birth BEFORE creating anything.
+        existing_children = await self.guardians.list_children_for_guardian(guardian_user_id)
+        if any(
+            child.full_name == full_name and child.date_of_birth == date_of_birth
+            for child in existing_children
+        ):
+            raise DuplicateGuardianRelationshipError("This guardian-child relationship already exists.")
+
         child = await self.guardians.create_child(
             full_name=full_name, date_of_birth=date_of_birth
         )
-        existing_relationship = await self.guardians.get_relationship(guardian_user_id, child.id)
-        if existing_relationship is not None:
-            raise DuplicateGuardianRelationshipError("This guardian-child relationship already exists.")
         await self.guardians.add_relationship(
             guardian_user_id=guardian_user_id,
             child_id=child.id,

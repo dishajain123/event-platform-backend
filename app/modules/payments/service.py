@@ -459,6 +459,7 @@ class PaymentService:
                 payment.reconciliation_error = None
                 if snapshot.status == "failed":
                     payment.status = PaymentStatus.FAILED
+                    await self._release_failed_payment_registration(payment)
             else:
                 payment.reconciliation_status = "pending"
                 payment.reconciliation_error = None
@@ -473,6 +474,62 @@ class PaymentService:
                 payment.reconciliation_error = str(exc)[:1000]
                 await self.db.commit()
             raise
+
+    async def _release_failed_payment_registration(self, payment: Payment) -> None:
+        """Release a seat only after the provider confirms payment failure.
+
+        An unreachable provider response remains ``unknown`` and must not
+        cancel a potentially successful payment. A confirmed failure, on the
+        other hand, must not leave the pending registration consuming event
+        capacity indefinitely.
+        """
+        registration = await self.registrations.get_by_id(payment.registration_id)
+        if registration is None or registration.status not in {
+            RegistrationStatus.PENDING_PAYMENT,
+            RegistrationStatus.APPROVED,
+        }:
+            return
+
+        await acquire_event_capacity_lock(self.db, payment.event_id)
+        registration = await self.registrations.get_by_id(payment.registration_id)
+        if registration is None or registration.status not in {
+            RegistrationStatus.PENDING_PAYMENT,
+            RegistrationStatus.APPROVED,
+        }:
+            return
+
+        now = datetime.now(timezone.utc)
+        registration.status = RegistrationStatus.CANCELLED
+        registration.cancelled_at = registration.cancelled_at or now
+        registration.cancellation_requested_at = registration.cancellation_requested_at or now
+        registration.cancellation_reason = "Payment provider reported a failed payment."
+
+        event = await self.events.get_by_id(payment.event_id)
+        config = await self.configs.get_configuration(payment.event_id)
+        if event is not None and config is not None and event.status == EventStatus.REGISTRATION_CLOSED:
+            registered_count = await self.registrations.count_active_for_event(payment.event_id)
+            availability = calculate_registration_availability(
+                event_status=EventStatus.REGISTRATION_OPEN,
+                capacity=config.capacity,
+                registered_count=registered_count,
+                registration_end_at=parse_registration_end_at(config.details),
+            )
+            if availability in {RegistrationAvailability.OPEN, RegistrationAvailability.LIMITED}:
+                event.status = EventStatus.REGISTRATION_OPEN
+
+        from app.modules.waitlists.service import WaitlistService
+
+        await WaitlistService(self.db).promote_next(
+            payment.event_id, registration.participation_type
+        )
+        await write_audit_log(
+            self.db,
+            entity_type="registration",
+            entity_id=registration.id,
+            action="cancelled_after_payment_failure",
+            actor_user_id=None,
+            after_value={"status": registration.status.value, "payment_id": str(payment.id)},
+        )
 
     async def reconcile_refund(self, refund_id: uuid.UUID) -> Refund | None:
         await acquire_advisory_lock(self.db, f"refund_reconciliation:{refund_id}")

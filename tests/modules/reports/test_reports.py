@@ -324,3 +324,81 @@ async def test_command_center_global_and_manager_scopes_are_event_bounded(db_ses
         await ReportService(db_session).get_command_center(
             event_ids={event.id}, event_id=other_event.id, page=1, page_size=25,
         )
+
+
+@pytest.mark.asyncio
+async def test_scoped_event_manager_can_reach_analytics_and_attendance_access_checks(db_session):
+    """
+    Regression test for a bug found in audit: reports/router.py's
+    _require_analytics_access() and _require_attendance_access() both call
+    user_has_scoped_role(), which the module never imported — a NameError
+    that's invisible to a global-role admin (the `or`'s first operand
+    short-circuits before the undefined name is ever touched) but crashes
+    every scoped Event Manager, the exact audience these endpoints are for.
+
+    The existing tests in this file only ever call ReportService/
+    AnalyticsService directly, bypassing router.py entirely, which is why
+    the bug shipped despite a passing test suite. This test calls the
+    router-level helper functions themselves, as a scoped-only (non-global)
+    Event Manager, so this specific class of "the router helper references
+    a name it never imported" bug can't silently reappear.
+    """
+    from app.modules.reports.router import _require_analytics_access, _require_attendance_access
+
+    event, staff, _registration, _payment = await _make_event_with_paid_checked_in_registration(db_session)
+
+    # staff holds EVENT_MANAGER scoped to `event` only (see the fixture) —
+    # no global role — so the first operand of the `or` in both helpers
+    # evaluates to False and must fall through to user_has_scoped_role().
+    assert await _require_analytics_access(event.id, staff, db_session) in (True, False)
+    assert await _require_attendance_access(event.id, staff, db_session) is None
+
+    # And an actor with no relationship to the event at all is still
+    # correctly rejected, not just "doesn't crash".
+    stranger = User(mobile_number="+919700000098")
+    db_session.add(stranger)
+    await db_session.flush()
+    with pytest.raises(PermissionDeniedError):
+        await _require_analytics_access(event.id, stranger, db_session)
+    with pytest.raises(PermissionDeniedError):
+        await _require_attendance_access(event.id, stranger, db_session)
+
+
+@pytest.mark.asyncio
+async def test_attendance_history_excludes_non_attending_registrations(db_session):
+    """
+    Regression test for a bug found in audit: page_attendance_history()
+    computed its eligible-status filter (CONFIRMED/CHECKED_IN/REFUND_FAILED)
+    but never applied it to the query, so a user's "my attendance history"
+    included every registration regardless of status.
+    """
+    event, staff, registration, _payment = await _make_event_with_paid_checked_in_registration(db_session)
+    registrant = await db_session.get(User, registration.user_id)
+
+    # A second, cancelled registration for the same user at a different
+    # event must NOT show up in their attendance history.
+    creator = User(mobile_number="+919700000099")
+    db_session.add(creator)
+    await db_session.flush()
+    start = datetime.now(timezone.utc) + timedelta(days=60)
+    other_event = await EventService(db_session).create_event(
+        created_by=creator.id, name="Cancelled-Only Event", description=None,
+        category="test", start_date=start, end_date=start + timedelta(days=1), organization_id=None,
+    )
+    await ConfigEngineService(db_session).upsert_configuration(
+        other_event.id, participation_types=["individual"], fee_amount=None,
+        currency="INR", capacity=10, approval_required=False, rules={}, discount_rules=None,
+    )
+    other_registration = await RegistrationService(db_session).create_registration(
+        event_id=other_event.id, actor=registrant, participation_type="individual",
+        date_of_birth=date(2012, 1, 1), child_id=None, team_id=None,
+        documents_provided=[], answers={}, participants=[],
+    )
+    other_registration.status = RegistrationStatus.CANCELLED
+    await db_session.flush()
+
+    items, total = await ReportService(db_session).repo.page_attendance_history(registrant.id, page=1, page_size=25)
+
+    assert total == 1
+    assert {item[2] for item in items} == {registration.id}
+    assert other_registration.id not in {item[2] for item in items}

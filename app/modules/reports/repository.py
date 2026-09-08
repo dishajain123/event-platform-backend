@@ -387,7 +387,7 @@ class ReportRepository:
     async def page_attendance_history(self, user_id: uuid.UUID, *, page=1, page_size=25):
         eligible = self._attendance_registration_filter()
         valid_ticket = self._valid_ticket_filter()
-        filters = [Registration.user_id == user_id]
+        filters = [Registration.user_id == user_id, eligible]
         total = await self.db.scalar(
             select(func.count(Registration.id)).where(*filters)
         ) or 0

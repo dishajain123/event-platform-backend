@@ -28,9 +28,11 @@ class VerificationStatus(StrEnum):
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "users"
 
-    mobile_number: Mapped[str] = mapped_column(String(20), unique=True, index=True, nullable=False)
+    mobile_number: Mapped[str | None] = mapped_column(String(20), unique=True, index=True, nullable=True)
     name: Mapped[str | None] = mapped_column(String(255), default=None)
-    email: Mapped[str | None] = mapped_column(String(255), default=None)
+    email: Mapped[str | None] = mapped_column(String(255), default=None, unique=True)
+    email_verified_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), default=None)
+    password_hash: Mapped[str | None] = mapped_column(String(255), default=None)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     identity_documents: Mapped[list["IdentityDocument"]] = relationship(

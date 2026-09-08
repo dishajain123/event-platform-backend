@@ -8,15 +8,17 @@ import uuid
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
+from redis.asyncio import Redis
 
 from app.core.permissions import user_has_global_role, user_has_scoped_role
 from app.exceptions import PermissionDeniedError
 from app.database import get_db
+from app.redis_client import get_redis
 from app.modules.identity.exceptions import InvalidTokenError
 from app.modules.identity.models import User
 from app.modules.identity.repository import UserRepository
 from app.modules.rbac.models import RoleName
-from app.security import TokenType, decode_token
+from app.security import TokenType, decode_token, token_revocation_key
 
 import jwt as _pyjwt
 
@@ -27,6 +29,7 @@ optional_bearer_scheme = HTTPBearer(auto_error=False)
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ) -> User:
     token = credentials.credentials
     try:
@@ -36,6 +39,8 @@ async def get_current_user(
 
     if claims.get("type") != TokenType.ACCESS.value:
         raise InvalidTokenError("An access token is required for this endpoint.")
+    if not claims.get("jti") or await redis.get(token_revocation_key(claims["jti"])):
+        raise InvalidTokenError("This session has been signed out.")
 
     user_id = uuid.UUID(claims["sub"])
     user = await UserRepository(db).get_by_id(user_id)
@@ -47,6 +52,7 @@ async def get_current_user(
 async def get_current_user_optional(
     credentials: HTTPAuthorizationCredentials | None = Depends(optional_bearer_scheme),
     db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ) -> User | None:
     """
     For endpoints that serve BOTH an unauthenticated public audience and
@@ -63,6 +69,8 @@ async def get_current_user_optional(
     except _pyjwt.PyJWTError:
         return None
     if claims.get("type") != TokenType.ACCESS.value:
+        return None
+    if not claims.get("jti") or await redis.get(token_revocation_key(claims["jti"])):
         return None
     try:
         user_id = uuid.UUID(claims["sub"])

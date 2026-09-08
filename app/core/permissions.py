@@ -8,6 +8,7 @@ import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.modules.rbac.models import GLOBAL_ROLES, SCOPED_ROLES, AssignmentStatus, Role, RoleAssignment, RoleName
 
@@ -15,6 +16,7 @@ from app.modules.rbac.models import GLOBAL_ROLES, SCOPED_ROLES, AssignmentStatus
 async def get_active_assignments(db: AsyncSession, user_id: uuid.UUID) -> list[RoleAssignment]:
     result = await db.execute(
         select(RoleAssignment)
+        .options(selectinload(RoleAssignment.role))
         .join(Role, RoleAssignment.role_id == Role.id)
         .where(
             RoleAssignment.user_id == user_id,
@@ -32,7 +34,7 @@ async def user_has_global_role(
     Finance Admin-style endpoints."""
     assignments = await get_active_assignments(db, user_id)
     for assignment in assignments:
-        role: Role = await db.get(Role, assignment.role_id)
+        role: Role = assignment.role
         if role.name in allowed_roles and role.name in GLOBAL_ROLES and assignment.event_id is None:
             return True
     return False
@@ -56,7 +58,7 @@ async def user_has_scoped_role(
     """
     assignments = await get_active_assignments(db, user_id)
     for assignment in assignments:
-        role: Role = await db.get(Role, assignment.role_id)
+        role: Role = assignment.role
 
         if allow_global_roles and role.name in allow_global_roles and assignment.event_id is None:
             return True

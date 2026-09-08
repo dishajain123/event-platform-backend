@@ -1,6 +1,8 @@
 """Pydantic request/response contracts for the identity module."""
 import uuid
 
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.modules.identity.models import DocumentType, VerificationStatus
@@ -22,8 +24,48 @@ class OTPRequestOut(BaseModel):
     resend_available_in_seconds: int
 
 
+class EmailSignupIn(BaseModel):
+    email: str = Field(..., min_length=5, max_length=255)
+    password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        value = value.strip().lower()
+        if "@" not in value or value.startswith("@") or value.endswith("@"):
+            raise ValueError("Enter a valid email address.")
+        return value
+
+
+class EmailLoginIn(EmailSignupIn):
+    pass
+
+
+class EmailCodeIn(BaseModel):
+    email: str = Field(..., min_length=5, max_length=255)
+    code: str = Field(..., min_length=4, max_length=8)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class PasswordResetRequestIn(BaseModel):
+    email: str = Field(..., min_length=5, max_length=255)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class PasswordResetIn(EmailCodeIn):
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
 class OTPVerifyIn(BaseModel):
-    mobile_number: str
+    mobile_number: str | None
     otp: str = Field(..., min_length=4, max_length=8)
 
     @field_validator("mobile_number")
@@ -42,13 +84,19 @@ class RefreshTokenIn(BaseModel):
     refresh_token: str
 
 
+class LogoutIn(BaseModel):
+    refresh_token: str | None = None
+    access_token: str | None = None
+
+
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    mobile_number: str
+    mobile_number: str | None
     name: str | None
     email: str | None
+    email_verified_at: datetime | None = None
     is_active: bool
 
 
@@ -79,6 +127,7 @@ class AccountOut(BaseModel):
     mobile_number: str
     name: str | None
     email: str | None
+    email_verified_at: datetime | None = None
     is_active: bool
     roles: list[AccountRoleOut]
 

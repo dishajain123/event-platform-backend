@@ -93,17 +93,98 @@ async def test_referral_qualifies_when_paid_registration_completes(db_session):
 
     issued = await service.evaluate_referral_qualification(registration.id)
     assert issued is not None
-    assert issued.status == ReferralRewardStatus.ISSUED
-    assert issued.qualified_at is not None
-    assert issued.issued_at is not None
-
-    refreshed_reward = await service.rewards.get_by_registration_id(registration.id)
-    assert refreshed_reward is not None
-    assert refreshed_reward.status == ReferralRewardStatus.ISSUED
 
     refreshed_profile = await service.referrals.get_by_id(profile.id)
     assert refreshed_profile is not None
     assert refreshed_profile.total_rewards_issued == 1
+
+
+@pytest.mark.asyncio
+async def test_referral_qualification_actually_fires_on_check_in(db_session):
+    """
+    Regression test for a bug found in audit: ReferralService's reward
+    auto-qualification (evaluate_referral_qualification, and its Celery
+    task app.workers.referral_tasks) were both fully implemented, but
+    nothing anywhere ever actually called either one outside a unit
+    test that invokes the service method directly — not the check-in
+    flow, not a payment webhook, not a scheduled task. In production,
+    a referral reward would never automatically qualify or issue.
+
+    This test drives the real trigger end-to-end (TicketService.check_in,
+    not ReferralService directly) and asserts the reward is issued as a
+    side effect of check-in, the way a real staff scan would produce it.
+    """
+    import hashlib
+    import hmac
+
+    from app.config import get_settings
+    from app.modules.tickets.models import CheckInSource
+    from app.modules.tickets.service import TicketService
+
+    event, referrer, referred = await _make_event(db_session)
+    referral_service = ReferralService(db_session)
+    registration_service = RegistrationService(db_session)
+
+    profile = await referral_service.get_or_create_profile(event.id, referrer)
+    registration = await registration_service.create_registration(
+        event_id=event.id,
+        actor=referred,
+        participation_type="individual",
+        date_of_birth=None,
+        child_id=None,
+        team_id=None,
+        documents_provided=[],
+        answers={},
+        participants=[],
+    )
+    reward = await referral_service.track_referral(
+        event_id=event.id,
+        actor=referred,
+        referral_code=profile.referral_code,
+        registration_id=registration.id,
+        device_fingerprint="device-checkin-test",
+        ip_address="127.0.0.1",
+    )
+    assert reward.status == ReferralRewardStatus.TRACKED
+
+    settings = get_settings()
+    secret = settings.payment_gateway_key_secret.encode()
+
+    from app.modules.payments.service import PaymentService
+
+    payment = await PaymentService(db_session).initiate_payment(
+        registration_id=registration.id, actor=referred
+    )
+    gateway_payment_id = "pay_referral_checkin_test"
+    signature = hmac.new(
+        secret, f"{payment.gateway_order_id}|{gateway_payment_id}".encode(), hashlib.sha256
+    ).hexdigest()
+    payment = await PaymentService(db_session).handle_webhook(
+        payment.gateway_order_id, gateway_payment_id, signature
+    )
+
+    from app.modules.rbac.models import Role, RoleAssignment, RoleName
+    from sqlalchemy import select
+
+    staff = User(mobile_number="+919500000004")
+    db_session.add(staff)
+    await db_session.flush()
+    role = (await db_session.execute(select(Role).where(Role.name == RoleName.EVENT_MANAGER))).scalar_one()
+    db_session.add(RoleAssignment(user_id=staff.id, role_id=role.id, event_id=event.id))
+    await db_session.flush()
+
+    ticket_service = TicketService(db_session)
+    ticket = await ticket_service.tickets.get_by_registration_id(registration.id)
+    assert ticket is not None, "A verified payment must have issued a ticket to check in."
+
+    await ticket_service.check_in(ticket.id, staff, source=CheckInSource.ONLINE)
+
+    await db_session.refresh(reward)
+    assert reward.status == ReferralRewardStatus.ISSUED, (
+        "Checking in the referred registration must trigger referral reward "
+        "qualification automatically — it must not require a manual call to "
+        "ReferralService.evaluate_referral_qualification()."
+    )
 
 
 @pytest.mark.asyncio

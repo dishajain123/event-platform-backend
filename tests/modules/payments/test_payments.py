@@ -20,7 +20,7 @@ from app.modules.payments.service import PaymentService
 from app.modules.rbac.models import Role, RoleAssignment, RoleName
 from app.modules.registrations.service import RegistrationService
 from app.modules.registrations.models import RegistrationStatus
-from app.integrations.payment_gateway_client import RazorpayPaymentGatewayClient
+from app.integrations.payment_gateway_client import GatewayPaymentSnapshot, RazorpayPaymentGatewayClient
 from app.modules.tickets.exceptions import InvalidTicketStateError
 from app.modules.tickets.models import CheckInSource, TicketStatus
 from app.modules.tickets.service import TicketService
@@ -215,6 +215,34 @@ async def test_failed_refund_keeps_payment_and_ticket_valid(monkeypatch, db_sess
     registration = await RegistrationService(db_session).get_registration_or_raise(context["registration"].id)
     assert registration.status == RegistrationStatus.REFUND_FAILED
     assert (await payment_service.payments.get_by_id(context["payment"].id)).status == PaymentStatus.VERIFIED
+
+
+@pytest.mark.asyncio
+async def test_provider_confirmed_failed_payment_releases_registration_capacity(monkeypatch, db_session):
+    context = await _make_paid_registration(db_session)
+    payment_service = PaymentService(db_session)
+
+    def provider_failure(*_args, **_kwargs):
+        return GatewayPaymentSnapshot(
+            payment_id="pay_provider_failed",
+            order_id=context["payment"].gateway_order_id,
+            status="failed",
+            amount=100000,
+            currency="INR",
+        )
+
+    monkeypatch.setattr(RazorpayPaymentGatewayClient, "fetch_payment", provider_failure)
+    payment = await payment_service.reconcile_payment(context["payment"].id)
+
+    assert payment is not None
+    assert payment.status == PaymentStatus.FAILED
+    registration = await RegistrationService(db_session).get_registration_or_raise(
+        context["registration"].id
+    )
+    assert registration.status == RegistrationStatus.CANCELLED
+    assert await RegistrationService(db_session).registrations.count_active_for_event(
+        context["event"].id
+    ) == 0
 
 
 @pytest.mark.asyncio

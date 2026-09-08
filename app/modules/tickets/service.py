@@ -3,6 +3,7 @@ Signed Code 128 ticket issuance, verification, and check-in handling.
 """
 import hashlib
 import hmac
+import logging
 import secrets
 import uuid
 from datetime import datetime, timezone
@@ -605,7 +606,45 @@ class TicketService:
         )
         await self.db.commit()
         await self.db.refresh(check_in)
+        await self._trigger_referral_qualification(registration.id)
         return check_in
+
+    async def _trigger_referral_qualification(self, registration_id: uuid.UUID) -> None:
+        """
+        BUG FIX (found in audit): ReferralService.evaluate_referral_qualification
+        and its Celery task were both fully implemented — reward issuance
+        requires the registration to reach CHECKED_IN/COMPLETED with a
+        verified payment — but nothing anywhere actually called either
+        one outside of a unit test. Check-in is the natural trigger: it's
+        the point where a registration first reaches CHECKED_IN, one of
+        the two qualification conditions. Best-effort and isolated from
+        the check-in transaction already committed above — a referrals
+        problem must never be able to fail or roll back a real check-in,
+        matching the same guard used for capacity-warning notifications
+        in RegistrationService.create_registration.
+
+        Most check-ins are not referred registrations at all, so
+        ReferralRewardNotFoundError here just means "nothing to do" —
+        that's the overwhelmingly common case, not a fault, and is
+        deliberately not logged as one.
+        """
+        from app.modules.referrals.exceptions import ReferralRewardNotFoundError
+
+        try:
+            if self.settings.environment == "production":
+                from app.workers.referral_tasks import evaluate_referral_qualification
+
+                evaluate_referral_qualification.delay(str(registration_id))
+            else:
+                from app.modules.referrals.service import ReferralService
+
+                await ReferralService(self.db).evaluate_referral_qualification(registration_id)
+        except ReferralRewardNotFoundError:
+            return
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Unable to evaluate referral qualification for registration %s", registration_id
+            )
 
     async def list_checkins(self, event_id: uuid.UUID, venue_id: uuid.UUID | None = None) -> list[CheckIn]:
         return await self.checkins.list_for_event(event_id, venue_id)
