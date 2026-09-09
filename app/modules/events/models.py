@@ -13,7 +13,7 @@ from enum import StrEnum
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType
+from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType, SoftDeleteMixin
 
 
 class EventStatus(StrEnum):
@@ -57,7 +57,7 @@ ALLOWED_TRANSITIONS: dict[EventStatus, set[EventStatus]] = {
 }
 
 
-class Event(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+class Event(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "events"
 
     organization_id: Mapped[uuid.UUID | None] = mapped_column(

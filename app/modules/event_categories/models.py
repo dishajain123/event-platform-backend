@@ -9,15 +9,15 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import Boolean, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, String, Text, Index, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType
+from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType, SoftDeleteMixin
 
 
-class MainCategory(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+class MainCategory(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "main_categories"
-    __table_args__ = (UniqueConstraint("name", name="uq_main_categories_name"),)
+    __table_args__ = (Index("uq_main_categories_name", "name", unique=True, postgresql_where=text("deleted_at IS NULL"), sqlite_where=text("deleted_at IS NULL")),)
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, default=None)
@@ -30,10 +30,10 @@ class MainCategory(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
 
-class SubCategory(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+class SubCategory(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "sub_categories"
     __table_args__ = (
-        UniqueConstraint("main_category_id", "name", name="uq_sub_categories_main_category_name"),
+        Index("uq_sub_categories_main_category_name", "main_category_id", "name", unique=True, postgresql_where=text("deleted_at IS NULL"), sqlite_where=text("deleted_at IS NULL")),
     )
 
     main_category_id: Mapped[uuid.UUID] = mapped_column(

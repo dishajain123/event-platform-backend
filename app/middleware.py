@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from app.config import get_settings
+from app.core.discovery_updates import notify_discovery_change
 
 logger = logging.getLogger("request")
 
@@ -52,6 +53,7 @@ def register_middleware(app: FastAPI) -> None:
         request_id = str(uuid.uuid4())
         start = time.monotonic()
         response = await call_next(request)
+        await notify_discovery_change(request.method, request.url.path, response.status_code)
         duration_ms = (time.monotonic() - start) * 1000
         logger.info(
             "request_id=%s method=%s path=%s status=%s duration_ms=%.1f",

@@ -17,6 +17,7 @@ from app.logging_config import configure_logging
 from app.middleware import register_middleware
 from app.database import get_db
 from app.redis_client import get_redis
+from app.core.discovery_updates import router as discovery_router
 
 # ---- Routers ----
 from app.modules.config_engine.router import router as config_engine_router
@@ -54,6 +55,7 @@ settings = get_settings()
 configure_logging(settings.environment)
 
 app = FastAPI(title=settings.app_name)
+app.include_router(discovery_router, prefix=settings.api_v1_prefix)
 
 register_middleware(app)
 register_exception_handlers(app)

@@ -1,11 +1,11 @@
 import uuid
+from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.modules.event_categories.exceptions import (
-    CategoryInUseError,
     CategoryNameConflictError,
     InvalidCategoryRelationshipError,
     MainCategoryNotFoundError,
@@ -13,7 +13,7 @@ from app.modules.event_categories.exceptions import (
 )
 from app.modules.event_categories.models import MainCategory, SubCategory
 from app.modules.event_categories.repository import MainCategoryRepository, SubCategoryRepository
-from app.modules.events.models import Event
+from app.modules.events.models import Event, EventStatus
 
 
 class EventCategoryService:
@@ -23,7 +23,7 @@ class EventCategoryService:
         self.sub_categories = SubCategoryRepository(db)
 
     async def _ensure_main_category_name_is_unique(self, name: str, *, exclude_id: uuid.UUID | None = None) -> None:
-        stmt = select(MainCategory.id).where(MainCategory.name == name)
+        stmt = select(MainCategory.id).where(MainCategory.name == name, MainCategory.deleted_at.is_(None))
         if exclude_id is not None:
             stmt = stmt.where(MainCategory.id != exclude_id)
         result = await self.db.execute(stmt)
@@ -40,6 +40,7 @@ class EventCategoryService:
         stmt = select(SubCategory.id).where(
             SubCategory.main_category_id == main_category_id,
             SubCategory.name == name,
+            SubCategory.deleted_at.is_(None),
         )
         if exclude_id is not None:
             stmt = stmt.where(SubCategory.id != exclude_id)
@@ -75,13 +76,6 @@ class EventCategoryService:
         categories = await self.main_categories.list_all(
             include_sub_categories=True, include_inactive=include_inactive
         )
-        if not include_inactive:
-            for category in categories:
-                category.sub_categories = [
-                    sub_category
-                    for sub_category in category.sub_categories
-                    if sub_category.is_active
-                ]
         return categories
 
     async def list_sub_categories(self, main_category_id: uuid.UUID | None = None, *, include_inactive: bool = False) -> list[SubCategory]:
@@ -129,9 +123,17 @@ class EventCategoryService:
 
     async def delete_main_category(self, main_category_id: uuid.UUID, actor_user_id: uuid.UUID) -> None:
         category = await self.get_main_category_or_raise(main_category_id)
-        if await self._main_category_in_use(main_category_id):
-            raise CategoryInUseError("This main category still has sub categories or events assigned to it.")
-        await self.main_categories.delete(category)
+        deleted_at = datetime.now(timezone.utc)
+        sub_ids = select(SubCategory.id).where(SubCategory.main_category_id == main_category_id)
+        await self.db.execute(update(Event).where(
+            or_(Event.main_category_id == main_category_id, Event.sub_category_id.in_(sub_ids)),
+            Event.deleted_at.is_(None),
+        ).values(deleted_at=deleted_at, status=EventStatus.ARCHIVED).execution_options(synchronize_session="fetch"))
+        await self.db.execute(update(SubCategory).where(
+            SubCategory.main_category_id == main_category_id, SubCategory.deleted_at.is_(None),
+        ).values(deleted_at=deleted_at, is_active=False).execution_options(synchronize_session="fetch"))
+        category.deleted_at = deleted_at
+        category.is_active = False
         await write_audit_log(
             self.db,
             entity_type="main_category",
@@ -139,6 +141,7 @@ class EventCategoryService:
             action="deleted",
             actor_user_id=actor_user_id,
             before_value={"name": category.name},
+            after_value={"deleted_at": deleted_at.isoformat(), "cascade": True},
         )
         await self.db.commit()
 
@@ -198,9 +201,12 @@ class EventCategoryService:
 
     async def delete_sub_category(self, sub_category_id: uuid.UUID, actor_user_id: uuid.UUID) -> None:
         category = await self.get_sub_category_or_raise(sub_category_id)
-        if await self._sub_category_in_use(sub_category_id):
-            raise CategoryInUseError("This sub category is already assigned to one or more events.")
-        await self.sub_categories.delete(category)
+        deleted_at = datetime.now(timezone.utc)
+        await self.db.execute(update(Event).where(
+            Event.sub_category_id == sub_category_id, Event.deleted_at.is_(None),
+        ).values(deleted_at=deleted_at, status=EventStatus.ARCHIVED).execution_options(synchronize_session="fetch"))
+        category.deleted_at = deleted_at
+        category.is_active = False
         await write_audit_log(
             self.db,
             entity_type="sub_category",
@@ -208,5 +214,6 @@ class EventCategoryService:
             action="deleted",
             actor_user_id=actor_user_id,
             before_value={"name": category.name},
+            after_value={"deleted_at": deleted_at.isoformat(), "cascade": True},
         )
         await self.db.commit()

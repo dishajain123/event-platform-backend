@@ -18,23 +18,26 @@ class MainCategoryRepository:
         return category
 
     async def get_by_id(self, category_id: uuid.UUID, *, include_sub_categories: bool = False) -> MainCategory | None:
-        stmt = select(MainCategory).where(MainCategory.id == category_id)
+        stmt = select(MainCategory).where(MainCategory.deleted_at.is_(None), MainCategory.id == category_id)
         if include_sub_categories:
-            stmt = stmt.options(selectinload(MainCategory.sub_categories))
+            stmt = stmt.options(selectinload(MainCategory.sub_categories.and_(SubCategory.deleted_at.is_(None))))
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
     async def get_by_name(self, name: str) -> MainCategory | None:
-        result = await self.db.execute(select(MainCategory).where(MainCategory.name == name))
+        result = await self.db.execute(select(MainCategory).where(MainCategory.deleted_at.is_(None), MainCategory.name == name))
         return result.scalar_one_or_none()
 
     async def list_all(self, *, include_sub_categories: bool = False, include_inactive: bool = False) -> list[MainCategory]:
-        stmt = select(MainCategory).order_by(MainCategory.name.asc())
+        stmt = select(MainCategory).where(MainCategory.deleted_at.is_(None)).order_by(MainCategory.name.asc())
         if not include_inactive:
             stmt = stmt.where(MainCategory.is_active.is_(True))
         if include_sub_categories:
-            stmt = stmt.options(selectinload(MainCategory.sub_categories))
-        result = await self.db.execute(stmt)
+            criteria = [SubCategory.deleted_at.is_(None)]
+            if not include_inactive:
+                criteria.append(SubCategory.is_active.is_(True))
+            stmt = stmt.options(selectinload(MainCategory.sub_categories.and_(*criteria)))
+        result = await self.db.execute(stmt.execution_options(populate_existing=True))
         return list(result.scalars().unique().all())
 
     async def delete(self, category: MainCategory) -> None:
@@ -52,12 +55,12 @@ class SubCategoryRepository:
         return category
 
     async def get_by_id(self, category_id: uuid.UUID) -> SubCategory | None:
-        result = await self.db.execute(select(SubCategory).where(SubCategory.id == category_id))
+        result = await self.db.execute(select(SubCategory).where(SubCategory.deleted_at.is_(None), SubCategory.id == category_id))
         return result.scalar_one_or_none()
 
     async def get_by_main_and_name(self, main_category_id: uuid.UUID, name: str) -> SubCategory | None:
         result = await self.db.execute(
-            select(SubCategory).where(
+            select(SubCategory).where(SubCategory.deleted_at.is_(None),
                 SubCategory.main_category_id == main_category_id,
                 SubCategory.name == name,
             )
@@ -65,7 +68,7 @@ class SubCategoryRepository:
         return result.scalar_one_or_none()
 
     async def list_all(self, main_category_id: uuid.UUID | None = None, *, include_inactive: bool = False) -> list[SubCategory]:
-        stmt = select(SubCategory).order_by(SubCategory.name.asc())
+        stmt = select(SubCategory).where(SubCategory.deleted_at.is_(None)).order_by(SubCategory.name.asc())
         if main_category_id is not None:
             stmt = stmt.where(SubCategory.main_category_id == main_category_id)
         if not include_inactive:

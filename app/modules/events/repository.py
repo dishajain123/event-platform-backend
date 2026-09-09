@@ -27,7 +27,7 @@ class EventRepository:
                 selectinload(Event.organizer),
                 selectinload(Event.configuration),
             )
-            .where(Event.id == event_id)
+            .where(Event.id == event_id, Event.deleted_at.is_(None))
             .execution_options(populate_existing=True)
         )
         result = await self.db.execute(stmt)
@@ -54,7 +54,7 @@ class EventRepository:
             selectinload(Event.organizer),
             selectinload(Event.configuration),
         )
-        stmt = stmt.where(Event.status.in_(visible_statuses)).execution_options(
+        stmt = stmt.where(Event.deleted_at.is_(None), Event.status.in_(visible_statuses)).execution_options(
             populate_existing=True
         )
         # Public discovery must not leak events whose taxonomy has been
@@ -95,7 +95,7 @@ class EventRepository:
             selectinload(Event.organizer),
             selectinload(Event.configuration),
         )
-        stmt = stmt.execution_options(populate_existing=True)
+        stmt = stmt.where(Event.deleted_at.is_(None)).execution_options(populate_existing=True)
         if main_category_id is not None:
             stmt = stmt.where(Event.main_category_id == main_category_id)
         if sub_category_id is not None:
@@ -104,7 +104,7 @@ class EventRepository:
         return list(result.scalars().all())
 
     async def page_all(self, *, include_all_statuses: bool, main_category_id=None, sub_category_id=None, search=None, status=None, page=1, page_size=25):
-        filters = []
+        filters = [Event.deleted_at.is_(None)]
         if not include_all_statuses:
             filters.append(Event.status.in_([EventStatus.PUBLISHED, EventStatus.REGISTRATION_OPEN, EventStatus.REGISTRATION_CLOSED, EventStatus.LIVE, EventStatus.COMPLETED]))
             filters.extend([
@@ -191,7 +191,7 @@ class VenueRepository:
         return list(result.scalars().all())
 
     async def list_assignable(self, event_id: uuid.UUID) -> list[Venue]:
-        result = await self.db.execute(select(Venue).where((Venue.event_id == event_id) | (Venue.is_shared.is_(True))).order_by(Venue.name.asc(), Venue.id.asc()))
+        result = await self.db.execute(select(Venue).join(Event, Event.id == Venue.event_id).where(Event.deleted_at.is_(None), (Venue.event_id == event_id) | (Venue.is_shared.is_(True))).order_by(Venue.name.asc(), Venue.id.asc()))
         return list(result.scalars().all())
 
     async def get_for_event(self, event_id: uuid.UUID, venue_id: uuid.UUID) -> Venue | None:
@@ -260,7 +260,7 @@ class ScheduleRepository:
             select(ScheduleItem, Event, Venue)
             .join(Event, Event.id == ScheduleItem.event_id)
             .outerjoin(Venue, Venue.id == ScheduleItem.venue_id)
-            .where(and_(*filters), *scopes)
+            .where(Event.deleted_at.is_(None), and_(*filters), *scopes)
             .order_by(ScheduleItem.start_time.asc(), ScheduleItem.id.asc())
         )
         return list(result.all())
