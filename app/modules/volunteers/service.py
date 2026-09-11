@@ -116,6 +116,8 @@ class VolunteerService:
         user = await self.db.get(User, item.user_id)
         if user is None:
             raise NotFoundError("Volunteer applicant account not found.")
+        if item.application_type == VolunteerApplicationType.EVENT_MANAGER:
+            raise ValidationError("An admin must designate this account in Admin Accounts, then select it as the event's primary manager.")
         staff = StaffService(self.db)
         role_name = (
             RoleName.EVENT_MANAGER

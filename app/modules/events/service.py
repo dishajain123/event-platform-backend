@@ -3,15 +3,19 @@ Business logic for events: lifecycle transitions (validated against
 ALLOWED_TRANSITIONS — no route or caller can push an event into an
 invalid state), plus venue/schedule management.
 """
+import asyncio
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.core.permissions import user_has_global_role, user_has_scoped_role, user_scoped_event_ids
+from app.config import get_settings
 from app.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
+from app.integrations.object_storage import get_object_storage_client
+from app.modules.events.image import ACCEPTED_CONTENT_TYPES, process_event_image
 from app.modules.event_categories.exceptions import (
     InvalidCategoryRelationshipError,
     MainCategoryNotFoundError,
@@ -24,8 +28,9 @@ from app.modules.config_engine.registration_state import (
     parse_registration_end_at,
 )
 from app.modules.config_engine.service import ConfigEngineService
-from app.modules.events.exceptions import EventNotFoundError, InvalidEventStatusTransitionError, ScheduleConflictError, SponsorNotFoundError, VenueNotFoundError
+from app.modules.events.exceptions import EventNotFoundError, InvalidEventImageError, InvalidEventStatusTransitionError, ScheduleConflictError, SponsorNotFoundError, VenueNotFoundError
 from app.modules.events.models import ALLOWED_TRANSITIONS, Event, EventStatus, EventTemplate, ScheduleStatus
+from app.modules.events.manager import assign_event_manager
 from app.modules.events.repository import EventRepository, EventTemplateRepository, ScheduleRepository, SponsorRepository, VenueRepository
 from app.modules.identity.repository import UserRepository
 from app.modules.identity.models import User
@@ -46,6 +51,7 @@ class EventService:
         self.sub_categories = SubCategoryRepository(db)
         self.users = UserRepository(db)
         self.configurations = ConfigEngineService(db)
+        self.storage = get_object_storage_client()
 
     async def _resolve_category_fields(
         self,
@@ -105,8 +111,8 @@ class EventService:
             organizer = await self.users.get_by_id(organizer_user_id)
             if organizer is None:
                 raise ValidationError("Selected organizer account does not exist.")
-            if not organizer.is_active:
-                raise ValidationError("Selected organizer account is inactive.")
+            if not organizer.is_active or not organizer.is_event_manager:
+                raise ValidationError("Select an existing active Event Manager account from Admin Accounts.")
         category_fields = await self._resolve_category_fields(
             main_category_id=fields.pop("main_category_id", None),
             sub_category_id=fields.pop("sub_category_id", None),
@@ -116,6 +122,8 @@ class EventService:
             category_fields["category"] = legacy_category
         fields.update(category_fields)
         event = await self.events.create(created_by=created_by, **fields)
+        if organizer_user_id is not None:
+            await assign_event_manager(self.db, event.id, organizer_user_id, created_by)
         await write_audit_log(
             self.db,
             entity_type="event",
@@ -245,6 +253,23 @@ class EventService:
         await self.db.commit()
         return template
 
+    async def delete_event(self, event_id, actor_user_id):
+        if not await user_has_global_role(self.db, actor_user_id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN}):
+            raise PermissionDeniedError("Only Operations or Super Admin can delete an event.")
+        event = (await self.db.execute(select(Event).where(Event.id == event_id,
+            Event.deleted_at.is_(None)).with_for_update())).scalar_one_or_none()
+        if event is None:
+            raise EventNotFoundError("Event not found.")
+        now = datetime.now(timezone.utc)
+        event.deleted_at = now
+        event.status = EventStatus.ARCHIVED
+        await self.db.execute(update(RoleAssignment).where(RoleAssignment.event_id == event_id,
+            RoleAssignment.status == AssignmentStatus.ACTIVE).values(
+                status=AssignmentStatus.REVOKED, revoked_at=now))
+        await write_audit_log(self.db, entity_type="event", entity_id=event_id,
+            action="deleted", actor_user_id=actor_user_id)
+        await self.db.commit()
+
     async def delete_template(self, actor: User, template_id: uuid.UUID):
         template = await self._get_visible_template(actor, template_id)
         if not template.is_archived:
@@ -255,14 +280,22 @@ class EventService:
         await self.db.delete(template)
         await self.db.commit()
 
-    async def _clone_snapshot(self, actor: User, snapshot: dict, *, name: str, start_date: datetime, end_date: datetime, organization_id: uuid.UUID | None = None):
+    async def _clone_snapshot(self, actor: User, snapshot: dict, *, name: str, start_date: datetime, end_date: datetime, organization_id: uuid.UUID | None = None, organizer_user_id: uuid.UUID | None = None):
         self._validate_event_dates(start_date, end_date)
         source_start = datetime.fromisoformat(snapshot["source_start_date"].replace("Z", "+00:00"))
         delta = start_date - source_start
         event_data = snapshot["event"]
         category_fields = await self._resolve_category_fields(main_category_id=uuid.UUID(event_data["main_category_id"]) if event_data.get("main_category_id") else None, sub_category_id=uuid.UUID(event_data["sub_category_id"]) if event_data.get("sub_category_id") else None, require_sub_category=False)
-        event = await self.events.create(created_by=actor.id, organizer_user_id=actor.id, organization_id=organization_id or (uuid.UUID(event_data["organization_id"]) if event_data.get("organization_id") else None), name=name, description=event_data.get("description"), start_date=start_date, end_date=end_date, status=EventStatus.DRAFT, **category_fields)
-        if not await user_has_global_role(self.db, actor.id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN}):
+        is_admin = await user_has_global_role(self.db, actor.id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN})
+        if is_admin and organizer_user_id is None:
+            raise ValidationError("Select an existing Event Manager for the new event.")
+        if not is_admin and organizer_user_id not in (None, actor.id):
+            raise PermissionDeniedError("Only an admin can assign another Event Manager.")
+        manager_id = organizer_user_id if is_admin else actor.id
+        event = await self.events.create(created_by=actor.id, organizer_user_id=manager_id, organization_id=organization_id or (uuid.UUID(event_data["organization_id"]) if event_data.get("organization_id") else None), name=name, description=event_data.get("description"), start_date=start_date, end_date=end_date, status=EventStatus.DRAFT, **category_fields)
+        if is_admin:
+            await assign_event_manager(self.db, event.id, manager_id, actor.id)
+        else:
             manager_role = (await self.db.execute(select(Role).where(Role.name == RoleName.EVENT_MANAGER))).scalar_one()
             self.db.add(RoleAssignment(user_id=actor.id, role_id=manager_role.id, event_id=event.id, assigned_by=actor.id, status=AssignmentStatus.ACTIVE))
         config_data = snapshot.get("configuration")
@@ -295,18 +328,18 @@ class EventService:
             self.db.add(AccessPolicy(event_id=event.id, access_type=item["access_type"], allowed_zone_ids=[str(zone_map[value]) for value in item.get("allowed_zone_ids", []) if value in zone_map], allows_reentry=item.get("allows_reentry", False), max_entries=item.get("max_entries", 1), valid_from=self._shift_datetime(item["valid_from"], delta) if item.get("valid_from") else None, valid_until=self._shift_datetime(item["valid_until"], delta) if item.get("valid_until") else None))
         return event
 
-    async def duplicate_event(self, actor: User, source_event_id: uuid.UUID, *, name: str, start_date: datetime, end_date: datetime):
+    async def duplicate_event(self, actor: User, source_event_id: uuid.UUID, *, name: str, start_date: datetime, end_date: datetime, organizer_user_id: uuid.UUID | None = None):
         if not await self._can_manage_event(actor, source_event_id):
             raise PermissionDeniedError("You cannot duplicate this event.")
         source = await self.get_event_or_raise(source_event_id)
-        event = await self._clone_snapshot(actor, await self._template_snapshot(source.id), name=name, start_date=start_date, end_date=end_date, organization_id=source.organization_id)
+        event = await self._clone_snapshot(actor, await self._template_snapshot(source.id), name=name, start_date=start_date, end_date=end_date, organization_id=source.organization_id, organizer_user_id=organizer_user_id)
         await write_audit_log(self.db, entity_type="event", entity_id=event.id, action="duplicated", actor_user_id=actor.id, after_value={"source_event_id": str(source.id)})
         await self.db.commit()
         return await self.get_event_or_raise(event.id)
 
-    async def create_event_from_template(self, actor: User, template_id: uuid.UUID, *, name: str, start_date: datetime, end_date: datetime):
+    async def create_event_from_template(self, actor: User, template_id: uuid.UUID, *, name: str, start_date: datetime, end_date: datetime, organizer_user_id: uuid.UUID | None = None):
         template = await self._get_visible_template(actor, template_id)
-        event = await self._clone_snapshot(actor, template.snapshot, name=name, start_date=start_date, end_date=end_date, organization_id=template.organization_id)
+        event = await self._clone_snapshot(actor, template.snapshot, name=name, start_date=start_date, end_date=end_date, organization_id=template.organization_id, organizer_user_id=organizer_user_id)
         await write_audit_log(self.db, entity_type="event", entity_id=event.id, action="created_from_template", actor_user_id=actor.id, after_value={"template_id": str(template.id)})
         await self.db.commit()
         return await self.get_event_or_raise(event.id)
@@ -383,12 +416,10 @@ class EventService:
         legacy_category = fields.pop("category", None)
         communication_fields = {"name", "description", "start_date", "end_date"}
         event_changed = bool(communication_fields.intersection(fields))
-        if "organizer_user_id" in fields and fields["organizer_user_id"] is not None:
-            organizer = await self.users.get_by_id(fields["organizer_user_id"])
-            if organizer is None:
-                raise ValidationError("Selected organizer account does not exist.")
-            if not organizer.is_active:
-                raise ValidationError("Selected organizer account is inactive.")
+        if "organizer_user_id" in fields:
+            if fields["organizer_user_id"] is None:
+                raise ValidationError("An event must have an Event Manager.")
+            await assign_event_manager(self.db, event_id, fields["organizer_user_id"], actor_user_id)
         if "main_category_id" in fields or "sub_category_id" in fields:
             category_fields = await self._resolve_category_fields(
                 main_category_id=fields.pop("main_category_id", event.main_category_id),
@@ -419,6 +450,69 @@ class EventService:
             await NotificationService(self.db).queue_event_change(
                 event.id, reason="The event schedule or details were updated."
             )
+        return await self.get_event_or_raise(event.id)
+
+    async def set_event_image(
+        self, event_id: uuid.UUID, actor_user_id: uuid.UUID, *, raw: bytes, content_type: str | None
+    ) -> Event:
+        event = await self.get_event_or_raise(event_id)
+        if not raw:
+            raise InvalidEventImageError("No image file was uploaded.")
+        max_bytes = get_settings().event_image_max_bytes
+        if len(raw) > max_bytes:
+            raise InvalidEventImageError(
+                f"Image exceeds the {max_bytes // (1024 * 1024)} MB size limit."
+            )
+        normalized_type = (content_type or "").split(";")[0].strip().lower()
+        if normalized_type and normalized_type not in ACCEPTED_CONTENT_TYPES:
+            raise InvalidEventImageError("Upload a JPEG, PNG, or WebP image.")
+
+        processed = await asyncio.to_thread(process_event_image, raw)
+        stored = await self.storage.upload_bytes(
+            storage_key=self.storage.build_event_image_key(event_id=str(event_id)),
+            data=processed,
+            content_type="image/jpeg",
+        )
+
+        old_key = event.image_storage_key
+        event.image_url = stored.public_url
+        event.image_storage_key = stored.storage_key
+        await write_audit_log(
+            self.db,
+            entity_type="event",
+            entity_id=event.id,
+            action="image_set",
+            actor_user_id=actor_user_id,
+            after_value={"image_url": stored.public_url},
+        )
+        await self.db.commit()
+        if old_key and old_key != stored.storage_key:
+            try:
+                await self.storage.delete_object(old_key)
+            except Exception:  # noqa: BLE001 — best effort; a stale object is harmless
+                pass
+        return await self.get_event_or_raise(event.id)
+
+    async def remove_event_image(self, event_id: uuid.UUID, actor_user_id: uuid.UUID) -> Event:
+        event = await self.get_event_or_raise(event_id)
+        old_key = event.image_storage_key
+        if event.image_url is None and old_key is None:
+            return event
+        event.image_url = None
+        event.image_storage_key = None
+        await write_audit_log(
+            self.db,
+            entity_type="event",
+            entity_id=event.id,
+            action="image_removed",
+            actor_user_id=actor_user_id,
+        )
+        await self.db.commit()
+        if old_key:
+            try:
+                await self.storage.delete_object(old_key)
+            except Exception:  # noqa: BLE001
+                pass
         return await self.get_event_or_raise(event.id)
 
     async def transition_status(

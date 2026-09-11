@@ -35,6 +35,12 @@ class ObjectStorageClient:
         safe_title = "-".join(title.lower().split())
         return f"events/{event_id}/media/{media_type}/{safe_title}-{secrets.token_hex(6)}"
 
+    def build_event_image_key(self, *, event_id: str) -> str:
+        # A fresh token per upload means a replaced image gets a brand-new
+        # public URL, which busts every downstream HTTP/image cache (browser,
+        # CDN, Flutter's cached_network_image) without any explicit purge.
+        return f"events/{event_id}/cover/{secrets.token_hex(8)}.jpg"
+
     def _has_minio(self) -> bool:
         return bool(self.settings.minio_endpoint)
 
@@ -120,6 +126,42 @@ class ObjectStorageClient:
         await asyncio.to_thread(_upload)
         public_url = await self._build_public_url(storage_key)
         return StoredObject(storage_key=storage_key, public_url=public_url)
+
+    async def upload_bytes(
+        self,
+        *,
+        storage_key: str,
+        data: bytes,
+        content_type: str,
+    ) -> StoredObject:
+        """Upload an in-memory blob (already validated/normalized by the caller)."""
+        if not self._has_minio():
+            if (
+                self.settings.environment.lower() in {"production", "prod"}
+                and not self.settings.allow_local_storage_fallback
+            ):
+                raise RuntimeError("Object storage is required in production.")
+            base = (self.settings.minio_public_base_url or "https://storage.local").rstrip("/")
+            return StoredObject(storage_key=storage_key, public_url=f"{base}/{storage_key}")
+
+        await self._ensure_bucket()
+        client = self._get_client()
+
+        def _upload() -> None:
+            client.put_object(
+                self.settings.minio_bucket,
+                storage_key,
+                io.BytesIO(data),
+                len(data),
+                content_type=content_type,
+            )
+
+        await asyncio.to_thread(_upload)
+        public_url = await self._build_public_url(storage_key)
+        return StoredObject(storage_key=storage_key, public_url=public_url)
+
+    async def delete_object(self, storage_key: str) -> None:
+        await self.delete_media_asset(storage_key)
 
     async def delete_media_asset(self, storage_key: str) -> None:
         if not self._has_minio():

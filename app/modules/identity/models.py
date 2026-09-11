@@ -33,6 +33,7 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     email: Mapped[str | None] = mapped_column(String(255), default=None, unique=True)
     email_verified_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), default=None)
     password_hash: Mapped[str | None] = mapped_column(String(255), default=None)
+    is_event_manager: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     identity_documents: Mapped[list["IdentityDocument"]] = relationship(

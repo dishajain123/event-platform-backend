@@ -19,7 +19,7 @@ async def notify_discovery_change(method: str, path: str, status: int) -> None:
     relative = path.removeprefix(prefix).strip("/").split("/")[0]
     if method not in {"POST", "PUT", "PATCH", "DELETE"} or not 200 <= status < 300:
         return
-    if relative not in {"events", "event-categories"}:
+    if relative not in {"events", "event-categories", "users"}:
         return
     # Services have committed before returning a successful response.
     # A notification outage must never turn a committed save into an error.

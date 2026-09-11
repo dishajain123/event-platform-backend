@@ -14,7 +14,7 @@ from app.core.permissions import user_has_global_role, user_has_scoped_role
 from app.exceptions import PermissionDeniedError
 from app.database import get_db
 from app.redis_client import get_redis
-from app.modules.identity.exceptions import InvalidTokenError
+from app.modules.identity.exceptions import InvalidTokenError, AccountDisabledError
 from app.modules.identity.models import User
 from app.modules.identity.repository import UserRepository
 from app.modules.rbac.models import RoleName
@@ -44,8 +44,10 @@ async def get_current_user(
 
     user_id = uuid.UUID(claims["sub"])
     user = await UserRepository(db).get_by_id(user_id)
-    if user is None or not user.is_active:
-        raise InvalidTokenError("User not found or inactive.")
+    if user is None:
+        raise InvalidTokenError("User not found.")
+    if not user.is_active:
+        raise AccountDisabledError()
     return user
 
 

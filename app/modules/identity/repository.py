@@ -16,7 +16,7 @@ class UserRepository:
         self.db = db
 
     async def get_by_id(self, user_id: uuid.UUID) -> User | None:
-        result = await self.db.execute(select(User).where(User.id == user_id))
+        result = await self.db.execute(select(User).where(User.id == user_id).execution_options(populate_existing=True))
         return result.scalar_one_or_none()
 
     async def list_all(self) -> list[User]:
@@ -30,11 +30,11 @@ class UserRepository:
 
     async def get_by_mobile_number(self, mobile_number: str) -> User | None:
         normalized = normalize_mobile_number(mobile_number)
-        result = await self.db.execute(select(User).where(User.mobile_number == normalized))
+        result = await self.db.execute(select(User).where(User.mobile_number == normalized).execution_options(populate_existing=True))
         return result.scalar_one_or_none()
 
     async def get_by_email(self, email: str) -> User | None:
-        result = await self.db.execute(select(User).where(User.email == email.strip().lower()))
+        result = await self.db.execute(select(User).where(User.email == email.strip().lower()).execution_options(populate_existing=True))
         return result.scalar_one_or_none()
 
     async def create(self, mobile_number: str | None) -> User:

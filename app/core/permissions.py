@@ -94,3 +94,46 @@ async def user_scoped_event_ids(
         )
     )
     return {event_id for (event_id,) in result.all() if event_id is not None}
+
+
+async def can_manage_account(db: AsyncSession, actor, target) -> bool:
+    """Account-wide action using existing global roles and event assignments.
+
+    A scoped manager cannot disable a shared volunteer account if doing so would
+    affect assignments in an event the manager does not control.
+    """
+    if not actor.is_active or actor.id == target.id:
+        return False
+    actor_assignments = await get_active_assignments(db, actor.id)
+    globals_ = {a.role.name for a in actor_assignments if a.event_id is None and a.role.name in GLOBAL_ROLES}
+    if RoleName.SUPER_ADMIN in globals_:
+        return True
+    assignments = await get_active_assignments(db, target.id)
+    target_roles = {a.role.name for a in assignments}
+    if target.is_event_manager:
+        target_roles.add(RoleName.EVENT_MANAGER)
+    if RoleName.OPERATIONS_ADMIN in globals_ and target_roles == {RoleName.EVENT_MANAGER}:
+        return True
+    if RoleName.FINANCE_ADMIN in globals_ and target_roles and target_roles <= {RoleName.FINANCE_OPERATOR, RoleName.FINANCE_AUDITOR}:
+        return True
+    from app.modules.events.models import Event
+    from app.modules.volunteers.models import VolunteerApplication, VolunteerApplicationStatus, VolunteerApplicationType
+    controlled = {a.event_id for a in actor_assignments if a.role.name == RoleName.EVENT_MANAGER and a.event_id is not None}
+    if not controlled or target_roles - {RoleName.STAFF_MEMBER}:
+        return False
+    controlled = set((await db.execute(select(Event.id).where(Event.id.in_(controlled), Event.deleted_at.is_(None)))).scalars())
+    applications = list((await db.execute(select(VolunteerApplication).join(Event).where(
+        VolunteerApplication.user_id == target.id, Event.deleted_at.is_(None),
+        VolunteerApplication.status != VolunteerApplicationStatus.REJECTED))).scalars())
+    if not any(a.application_type == VolunteerApplicationType.VOLUNTEER and
+               a.status == VolunteerApplicationStatus.APPROVED and a.event_id in controlled for a in applications):
+        return False
+    # A global account disable must not reach a participant's other organization.
+    from app.modules.registrations.models import Registration
+    controlled_orgs = set((await db.execute(select(Event.organization_id).where(Event.id.in_(controlled)))).scalars())
+    participating_orgs = set((await db.execute(select(Event.organization_id).join(Registration, Registration.event_id == Event.id).where(
+        Registration.user_id == target.id, Event.deleted_at.is_(None)))).scalars())
+    if participating_orgs - controlled_orgs:
+        return False
+    return all(a.event_id in controlled for a in applications) and all(
+        a.role.name == RoleName.STAFF_MEMBER and a.event_id in controlled for a in assignments)

@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     minio_secure: bool = False
     minio_public_base_url: str = ""
     media_max_bytes: int = 10 * 1024 * 1024
+    event_image_max_bytes: int = 5 * 1024 * 1024
     allow_local_storage_fallback: bool = False
 
     # ---- SMS provider ----

@@ -90,8 +90,6 @@ async def test_volunteer_application_scope_duplicate_lifecycle_and_activation(db
         "phone": applicant.mobile_number,
     })
     await service.update_status(operations, manager_application.id, VolunteerApplicationStatus.APPROVED)
-    activated_manager = await service.activate(operations, manager_application.id)
-    assert activated_manager.application_type == VolunteerApplicationType.EVENT_MANAGER
-    assignment = await db_session.get(StaffAssignment, activated_manager.activated_staff_assignment_id)
-    assert assignment is not None
-    assert assignment.role_name == RoleName.EVENT_MANAGER
+    with pytest.raises(ValidationError, match="Admin Accounts"):
+        await service.activate(operations, manager_application.id)
+    assert manager_application.activated_staff_assignment_id is None

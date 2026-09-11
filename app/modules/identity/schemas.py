@@ -1,9 +1,10 @@
 """Pydantic request/response contracts for the identity module."""
 import uuid
+from typing import Literal
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, computed_field, model_validator
 
 from app.modules.identity.models import DocumentType, VerificationStatus
 from app.modules.identity.phone import normalize_mobile_number
@@ -89,7 +90,16 @@ class LogoutIn(BaseModel):
     access_token: str | None = None
 
 
-class UserOut(BaseModel):
+class AccountStatusView(BaseModel):
+    is_active: bool
+
+    @computed_field
+    @property
+    def status(self) -> Literal["ACTIVE", "DISABLED"]:
+        return "ACTIVE" if self.is_active else "DISABLED"
+
+
+class UserOut(AccountStatusView):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -120,20 +130,35 @@ class AccountRoleOut(BaseModel):
     status: str
 
 
-class AccountOut(BaseModel):
+class AccountOut(AccountStatusView):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    mobile_number: str
+    mobile_number: str | None
     name: str | None
     email: str | None
     email_verified_at: datetime | None = None
     is_active: bool
+    is_event_manager: bool = False
+    managed_events: list[dict] = Field(default_factory=list)
+    can_manage_status: bool = False
     roles: list[AccountRoleOut]
 
 
 class AccountStatusUpdateIn(BaseModel):
-    is_active: bool
+    is_active: bool | None = None
+    status: Literal["ACTIVE", "DISABLED"] | None = None
+
+    @model_validator(mode="after")
+    def resolve_status(self):
+        if self.status is None and self.is_active is None:
+            raise ValueError("Provide ACTIVE or DISABLED status.")
+        if self.status is not None:
+            active = self.status == "ACTIVE"
+            if self.is_active is not None and self.is_active != active:
+                raise ValueError("Conflicting account status values.")
+            self.is_active = active
+        return self
 
 
 class IdentityDocumentIn(BaseModel):
@@ -163,6 +188,7 @@ class AdminUserLookupIn(BaseModel):
 
     mobile_number: str = Field(..., min_length=10, max_length=15)
     name: str | None = None
+    is_event_manager: bool = False
 
     @field_validator("mobile_number")
     @classmethod

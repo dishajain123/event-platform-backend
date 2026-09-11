@@ -98,6 +98,8 @@ class StaffService:
         if not await self._can_manage_event(actor, event_id):
             raise PermissionDeniedError("You don't have permission to manage staff for this event.")
 
+        if role_name == RoleName.EVENT_MANAGER:
+            raise InvalidStaffRoleNameError("Select the primary Event Manager from the event's manager settings after admin designation.")
         if role_name not in SCOPED_ROLES:
             raise InvalidStaffRoleNameError(
                 f"'{role_name}' is not a valid staff role. Must be one of: "
@@ -178,6 +180,12 @@ class StaffService:
                 "Ask your Event Manager to reissue the invitation."
             )
 
+        if assignment.role_name == RoleName.EVENT_MANAGER:
+            raise InvalidStaffRoleNameError("Event Manager invitations must be replaced by an admin assigning the primary manager in event settings.")
+        from app.modules.events.repository import EventRepository
+        if await EventRepository(self.db).get_by_id(assignment.event_id) is None:
+            raise InvalidStaffAssignmentStateError("This event has been deleted.")
+
         before = self._snapshot(assignment)
 
         role = await self.roles.get_by_name(assignment.role_name)
@@ -241,6 +249,8 @@ class StaffService:
             raise PermissionDeniedError("You don't have permission to manage staff for this event.")
 
         effective_role_name = role_name or old_assignment.role_name
+        if effective_role_name == RoleName.EVENT_MANAGER or old_assignment.role_name == RoleName.EVENT_MANAGER:
+            raise InvalidStaffRoleNameError("Use the event's primary manager settings to assign an Event Manager.")
         if effective_role_name not in SCOPED_ROLES:
             raise InvalidStaffRoleNameError(
                 f"'{effective_role_name}' is not a valid staff role. Must be one of: "
@@ -304,6 +314,9 @@ class StaffService:
             raise PermissionDeniedError("You don't have permission to manage staff for this event.")
         if assignment.status == StaffAssignmentStatus.REVOKED:
             raise InvalidStaffAssignmentStateError("This assignment is already revoked.")
+
+        if assignment.role_name == RoleName.EVENT_MANAGER:
+            raise InvalidStaffRoleNameError("Use the event's primary manager settings to replace this Event Manager.")
 
         before = self._snapshot(assignment)
         assignment.status = StaffAssignmentStatus.REVOKED

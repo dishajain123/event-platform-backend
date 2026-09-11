@@ -59,6 +59,12 @@ class RBACService:
         if role_name in SCOPED_ROLES and event_id is None:
             raise ScopeRequiredError(f"'{role_name}' requires an event_id.")
 
+        if role_name == RoleName.EVENT_MANAGER:
+            from app.modules.events.manager import assign_event_manager
+            assignment = await assign_event_manager(self.db, event_id, target_user_id, assigned_by)
+            await self.db.commit()
+            return assignment
+
         assignment = await self.assignments.create(
             user_id=target_user_id, role_id=role.id, event_id=event_id, assigned_by=assigned_by
         )

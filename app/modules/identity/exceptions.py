@@ -28,3 +28,9 @@ class InvalidTokenError(AppError):
 
 class DuplicateIdentityDocumentError(ConflictError):
     error_code = "duplicate_identity_document"
+
+class AccountDisabledError(InvalidTokenError):
+    error_code = "account_disabled"
+
+    def __init__(self):
+        super().__init__("This account is disabled. Contact an authorized administrator to reactivate it.")

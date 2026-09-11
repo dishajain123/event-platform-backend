@@ -149,3 +149,48 @@ The test suite covers event configuration, registration rules, capacity/deadline
 - Configure CORS only for the deployed console/mobile origins.
 - Run the API and Celery worker as separate supervised processes.
 - Monitor failed payments, webhook failures, registration capacity errors, check-in conflicts, and background job retries.
+
+## Screenshot-based GO-360° dummy data
+
+The seed owns the screenshot's four main categories, topic sub-categories, 16 events and connected operational fixtures in the backend. Existing equivalent taxonomy is reused. Reset is dummy-only and preserves unrelated rows; it no longer truncates application tables.
+
+```bash
+cd /Users/dishajain/Desktop/event-platform-backend
+venv/bin/alembic upgrade head
+# Fresh/reset seed:
+venv/bin/python -m scripts.seed_platform reset --size medium
+# Refresh dummy fixtures:
+venv/bin/python -m scripts.seed_platform refresh --size medium
+# Add missing dummy rows, preserving existing data:
+venv/bin/python -m scripts.seed_platform add --size medium
+# Counts, hierarchy, references and both client API response formats:
+venv/bin/python -m scripts.validate_seed
+venv/bin/python -m scripts.verify_seed_api
+```
+
+See [seed instructions, counts, safety guarantees and screenshot assumptions](scripts/seed/README.md). Run commands with the intended local `.env`, PostgreSQL and Redis available. No frontend hardcoded dataset is used.
+
+## Account Disable / Reactivate
+
+Account status uses the existing persisted `users.is_active` value as its single source of truth. Identity responses expose `status: "ACTIVE" | "DISABLED"` and retain `is_active` for compatibility. No new status table or migration is needed.
+
+`PATCH /api/v1/users/{user_id}/status` accepts `{"status":"DISABLED"}` or `{"status":"ACTIVE"}`. The legacy `{"is_active":false}` form remains supported; contradictory values are rejected. `GET /api/v1/users/accounts` returns the caller's permitted account list and a server-computed `can_manage_status` flag.
+
+| Actor | May disable/reactivate |
+|---|---|
+| Super Admin | Any other account |
+| Operations Admin | Event Managers only, including eligible unassigned managers |
+| Finance Admin | Finance Operators and Finance Auditors only |
+| Event Manager | Approved volunteer accounts within their active managed events |
+
+Self-status changes are denied. Non-super admins cannot act on targets with additional higher/unrelated roles. Managers cannot disable shared volunteers with active assignments/applications outside their controlled events, or with registrations in another organization. Existing global admin roles remain platform-wide: the current schema has event organizations but no tenant-specific admin membership model. This feature uses those existing global/event scopes, rather than inventing a separate tenant permission system.
+
+The Console exposes confirmed Disable/Reactivate actions in Admin Accounts (Finance Accounts for Finance Admin). Mobile Event Managers can use Staff Profile → Volunteer accounts. Both clients use backend eligibility and display Active/Disabled indicators and server errors.
+
+Disabled accounts cannot request/verify OTPs, complete email verification, log in by password, refresh tokens, or call protected APIs with earlier-issued tokens. Password recovery cannot reactivate an account. The account-disabled error ends client sessions without token refresh; live invalidation and foreground reconnection also refresh permissions. Guest browsing remains public. Reactivation preserves the account, roles and history. Normal clients must sign in again after their disabled session has been cleared.
+
+Changes produce `account_disabled`/`account_reactivated` audit entries with actor, target, and before/after state. Requests lock actor/target records in stable order and repeated requests for the existing status are idempotent.
+
+```bash
+venv/bin/python -m pytest tests/test_account_status.py -q
+```

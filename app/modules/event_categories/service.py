@@ -14,6 +14,7 @@ from app.modules.event_categories.exceptions import (
 from app.modules.event_categories.models import MainCategory, SubCategory
 from app.modules.event_categories.repository import MainCategoryRepository, SubCategoryRepository
 from app.modules.events.models import Event, EventStatus
+from app.modules.rbac.models import RoleAssignment, AssignmentStatus
 
 
 class EventCategoryService:
@@ -132,6 +133,10 @@ class EventCategoryService:
         await self.db.execute(update(SubCategory).where(
             SubCategory.main_category_id == main_category_id, SubCategory.deleted_at.is_(None),
         ).values(deleted_at=deleted_at, is_active=False).execution_options(synchronize_session="fetch"))
+        await self.db.execute(update(RoleAssignment).where(
+            RoleAssignment.event_id.in_(select(Event.id).where(Event.deleted_at == deleted_at)),
+            RoleAssignment.status == AssignmentStatus.ACTIVE,
+        ).values(status=AssignmentStatus.REVOKED, revoked_at=deleted_at))
         category.deleted_at = deleted_at
         category.is_active = False
         await write_audit_log(
@@ -205,6 +210,10 @@ class EventCategoryService:
         await self.db.execute(update(Event).where(
             Event.sub_category_id == sub_category_id, Event.deleted_at.is_(None),
         ).values(deleted_at=deleted_at, status=EventStatus.ARCHIVED).execution_options(synchronize_session="fetch"))
+        await self.db.execute(update(RoleAssignment).where(
+            RoleAssignment.event_id.in_(select(Event.id).where(Event.deleted_at == deleted_at)),
+            RoleAssignment.status == AssignmentStatus.ACTIVE,
+        ).values(status=AssignmentStatus.REVOKED, revoked_at=deleted_at))
         category.deleted_at = deleted_at
         category.is_active = False
         await write_audit_log(

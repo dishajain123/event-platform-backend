@@ -1,43 +1,122 @@
-# Local Demo Data
+# GO-360° screenshot dataset
 
-The backend is the only source of demo data. The Flutter app and Operations Console consume these records through their normal API clients; no frontend mock dataset is maintained.
+The database is the source of truth for Console and Flutter. No frontend category/event fixtures were added. The [source transcription](screenshot-source.md) and [executable manifest](go360_data.py) record all 16 visible events/initiatives and their topic assignments.
 
-## Commands
+## Copy-paste commands
 
-From `/Users/dishajain/Desktop/event-platform-backend`:
-
-```bash
-source venv/bin/activate
-alembic upgrade head
-python -m scripts.seed_platform seed --size small
-python -m scripts.validate_seed
-uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
-pytest -q
-```
-
-Use `medium` for normal pagination/search work and `large` for a heavier local dataset:
+Run from the backend repository, with PostgreSQL and Redis running and `.env` pointing at your intended local database. `ENVIRONMENT` must be `development`, `test`, or `local`.
 
 ```bash
-python -m scripts.seed_platform seed --size medium
-python -m scripts.seed_platform seed --size large
+cd /Users/dishajain/Desktop/event-platform-backend
+venv/bin/alembic upgrade head
 ```
 
-Seeding is deterministic and idempotent for the `DEMO-` records. The explicit reset command is destructive and is refused unless `ENVIRONMENT` is `development`, `test`, or `local`:
+No additional migration was introduced for seeding. The existing Event Manager migration (`d5e6f7a8b9c0`) is required by the current application model. Seed ownership is stored transactionally as a dedicated `seed_dataset` metadata entry in the existing audit table.
+
+Fresh seed / replace the old dummy dataset:
 
 ```bash
-python -m scripts.seed_platform reset
+venv/bin/python -m scripts.seed_platform reset --size medium
 ```
 
-## Generated coverage
+Refresh dummy data after editing the manifest (same operation as reset):
 
-The seed creates roles, granular permissions and scoped assignments; users and verified identity documents; categories/subcategories; events, templates, configuration, field schemas, venues and schedules; registrations/participants and guardian relationships; teams, members, invitations and join requests; staff assignment history; access policies/zones, Code 128-compatible tickets, transfers and check-ins; payments, refunds, discount codes and processed webhook inbox records; volunteer applications/shifts/attendance; feedback, incidents, audit logs, media/highlights; notifications/preferences/templates/device tokens; sponsorship inquiries/packages/deliverables/engagements; competitions/stages/entries/matches/stage decisions; networking profiles/connections/dismissals/reports; polls, responses, votes, questions and upvotes; certificates/badges; waitlists, assistance requests, referrals and rewards.
+```bash
+venv/bin/python -m scripts.seed_platform refresh --size medium
+```
 
-The small/medium/large profiles create 8/24/72 participants plus fixed operational accounts and three events. Dates cover completed, published/future, and currently open events. Statuses intentionally cover confirmed, checked-in, completed, approved, pending payment, and cancelled registrations.
+Add missing dummy rows while preserving existing rows:
 
-## Local accounts
+```bash
+venv/bin/python -m scripts.seed_platform add --size medium
+```
 
-The generated accounts use mobile numbers `+919800000001` onward and emails ending in `@event-platform.test`. OTP login remains the real authentication path; the seed never stores passwords or production credentials. The first fixed accounts are Super Admin, Operations Admin, Finance Admin, Event Manager, Staff Member, and Volunteer in that order.
+The existing `seed` command is an alias for `add`. `small`, `medium`, and `large` create 8, 24, or 72 participant accounts plus six operational accounts. The screenshot hierarchy and event/scenario counts remain fixed; larger profiles add accounts for search/pagination.
 
-## Validation and limitations
+Verify persisted counts, hierarchy, every declared FK, manager assignments, ticket signatures, attendance and team links:
 
-`validate_seed.py` checks demo roots, stable IDs, registration ownership, and queryability of every event-scoped table. API smoke tests should be run against a started backend because authentication tokens and external providers are runtime concerns. Razorpay, SMS, push delivery, object storage, physical barcode scanning, and device offline transitions require their real local/test services and are not fabricated by this seed.
+```bash
+venv/bin/python -m scripts.validate_seed
+venv/bin/python -m scripts.verify_seed_api
+venv/bin/python -m pytest tests/test_go360_seed.py -q
+```
+
+`verify_seed_api` uses the real FastAPI route handlers and configured database through an in-process HTTP transport. It checks both the mobile array response and console paginated response. A separate running HTTP server is not required. It does not replace testing the UI on a physical device.
+
+Start the backend for the applications:
+
+```bash
+venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+```
+
+## Reset safety and ownership
+
+- The former whole-database `TRUNCATE ... CASCADE` reset has been removed.
+- New rows use a separate UUIDv5 namespace. A database ownership manifest records exact table/UUID pairs. Names, phone numbers, and email suffixes are never deletion criteria.
+- `legacy_inventory.json` contains the deterministic IDs generated by the previous `large` seed in an isolated in-memory database. Shared roles/permissions are excluded. It lets the reset recognize old small/medium/large fixtures without claiming manually created records.
+- Rows with outside FK references or non-seed user/event audit references are retained, together with their referenced ancestors. Non-null reference cycles cause rollback rather than disabling FK enforcement.
+- Existing equivalent category/sub-category records are reused and are **not** claimed for deletion. During reset/refresh only, their casing/whitespace is normalized to the screenshot (`G360° LIVE` becomes `GO-360° LIVE`). IDs, relationships and other attributes remain intact. Add never normalizes existing labels.
+- Before committing, the command compares every non-seed row with an in-memory baseline and rejects deletion or modification, except the explicitly permitted taxonomy label normalization during reset/refresh.
+- Reset and reseeding share one transaction. PostgreSQL advisory locking serializes seed invocations. Failed constraints roll back the operation. No SMS, real payments or outbound notifications are sent. A Redis invalidation signals clients to reload committed data.
+- Add does not overwrite existing fixture edits; use refresh to restore the latest fixture values. Protected legacy records are reported and may remain soft-deleted to preserve external history. Do not delete them manually to force counts to zero.
+
+## Screenshot mapping and assumptions
+
+The user's clarification identifies topic labels (Sports, Business, Networking, etc.) as sub-categories. Schedule, Tickets, Info and similar navigation/actions are not events.
+
+| Main category | Sub-categories | Event count |
+|---|---|---:|
+| Corporate 360° | Sports, Business, Networking | 5 |
+| Community 360° | Competitions, Food, Culture, Sports, Family, Youth | 5 |
+| Contribute 360° | Give Back, Social Impact, Community Development | 5 |
+| GO-360° LIVE | Music, Entertainment, Global Experiences | 1 |
+
+Cricket, football and wellness → Sports; leadership → Business; startup showcase → Networking. Talent Hunt → Competitions; food/culture/open sports/family events → their matching topics. Plantation and cleanup → Community Development; blood donation and NGO showcase → Social Impact; education → Give Back. The LIVE finale → Music. Youth, Entertainment and Global Experiences remain empty topics: the screenshot does not list separate events for them. These subject-based assignments are interpretations of the supplied artwork, not additional invented events.
+
+All event names, dates (23–29 December 2027), and visible venue/details text come from the image. Unknown times are 09:00–21:00 Asia/Kolkata. Unknown database statuses use `registration_open` so browsing/enrolment can be exercised. Capacities (200), fees (₹499, with Contribute free), age/team rules, accounts and operational records are synthetic assumptions. The LIVE detail rows are stored in configuration `details.programme` rather than turned into extra events.
+
+Attendance represents a **festival-day simulation in December 2027**, not attendance claimed to have happened today. Registration, scan and notification dates reflect that scenario; `details.seed_simulation` identifies it. No real provider transactions, receipts, identity documents or artist lineup are fabricated.
+
+## Medium dataset counts
+
+| Records | Count |
+|---|---:|
+| Main categories / sub-categories / events | 4 / 15 / 16 |
+| New dummy users | 30 |
+| Registrations / participants | 99 / 105 |
+| Teams / team members | 3 / 9 |
+| Payments / refunds | 44 / 11 |
+| Tickets / check-ins | 32 / 16 |
+| Notifications | 96 |
+| Event configurations / field schemas | 16 / 48 |
+| Venues / schedules / access zones / access policies | 16 each |
+| Staff assignments / staff history | 16 each |
+| Volunteer applications / shifts | 16 each |
+| Role assignments / organization | 34 / 1 |
+
+### Engagement / operations coverage (`scripts/seed/engagement.py`)
+
+Added per event (all 16), so every Console and Mobile App screen has full,
+varied, testable content — including states that only show up in edge cases:
+
+| Records | Count | States covered |
+|---|---:|---|
+| Live polls / options / responses / votes | 48 / 192 / 192 / 192 | draft, live, closed |
+| Audience Q&A / upvotes | 64 / 144 | pending, approved, answered, rejected |
+| Attendee feedback | 80 | 5 categories, ratings 2–5 |
+| Waitlist entries | 80 | waiting, promoted, expired, left |
+| Certificate templates / certificates / badge defs / awards | 16 / 32 / 16 / 16 | issued, revoked |
+| Networking configs / profiles / connections / reports | 16 / 96 / 64 / 16 | visible/hidden, pending/accepted/rejected/blocked, open/resolved |
+| Referrals / referral rewards | 16 / 64 | tracked, qualified, issued, flagged |
+| Incidents | 64 | open, acknowledged, in progress, resolved, all 4 severities |
+| Assistance (fee waiver) requests | 32 | pending, approved, rejected |
+| Competitions / stages / entries / decisions | 4 / 12 / 16 / 16 | cricket, football, talent, open-sports — group → semi → final |
+
+Global (not per-event): sponsorship categories/packages/inquiries (1 / 3 / 5,
+spanning new → reviewing → approved → confirmed and a rejected one, each
+linked to specific events via `sponsorship_inquiry_events`) and 3
+guardian/child profiles for testing under-age registration flows.
+
+On the existing database, four main categories and three Corporate sub-categories were reused, so the ownership report lists 12 newly owned sub-categories rather than 15. Eight legacy records remain protected by non-seed references; shared roles and permissions are also preserved. Global database counts therefore include records beyond the fixture counts above.
+
+Accounts use `go360-000@example.test` onward and `+919700000000` onward. Account indices 0/1/2/3/4/5 are Operations Admin, Finance Admin, assigned Event Manager, Staff Member, Volunteer, and an eligible but unassigned Event Manager. Last participant is inactive. Login uses the application's existing authentication; no default password is installed.

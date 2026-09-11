@@ -19,3 +19,7 @@ class SponsorNotFoundError(NotFoundError):
 
 class ScheduleConflictError(ConflictError):
     error_code = "schedule_conflict"
+
+
+class InvalidEventImageError(ValidationError):
+    error_code = "invalid_event_image"

@@ -78,6 +78,11 @@ class Event(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     start_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     end_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[EventStatus] = mapped_column(Enum(EventStatus), default=EventStatus.DRAFT)
+    # Optional normalized cover image (16:9 JPEG) stored via object storage.
+    # `image_url` is the public URL clients render; `image_storage_key` is the
+    # bucket key kept only so a replace/remove can delete the old object.
+    image_url: Mapped[str | None] = mapped_column(String(500), default=None)
+    image_storage_key: Mapped[str | None] = mapped_column(String(255), default=None)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUIDType, ForeignKey("users.id"), default=None
     )

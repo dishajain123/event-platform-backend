@@ -5,7 +5,7 @@ console) — see the include_all_statuses query param, gated by role.
 """
 import uuid
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, File, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import user_has_global_role
@@ -170,6 +170,44 @@ async def update_event(
     event = await service.update_event(
         uuid.UUID(event_id), current_user.id, **payload.model_dump(exclude_unset=True)
     )
+    return await service.to_response(event)
+
+
+@router.put(
+    "/{event_id}/image",
+    response_model=EventOut,
+    dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN))],
+)
+async def set_event_image(
+    event_id: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    service: EventService = Depends(get_event_service),
+):
+    """Called by: console (Super Admin / Operations Admin). Uploads and
+    normalizes the optional event cover image. The upload lands under the
+    /events path, so the discovery cache-invalidation stream fires and the
+    mobile app refetches the new image without an app release."""
+    raw = await file.read()
+    event = await service.set_event_image(
+        uuid.UUID(event_id), current_user.id, raw=raw, content_type=file.content_type
+    )
+    return await service.to_response(event)
+
+
+@router.delete(
+    "/{event_id}/image",
+    response_model=EventOut,
+    dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN))],
+)
+async def delete_event_image(
+    event_id: str,
+    current_user: User = Depends(get_current_user),
+    service: EventService = Depends(get_event_service),
+):
+    """Called by: console. Removes the event cover image; clients fall back
+    to the deterministic placeholder."""
+    event = await service.remove_event_image(uuid.UUID(event_id), current_user.id)
     return await service.to_response(event)
 
 
@@ -363,3 +401,12 @@ async def delete_sponsor(
 ):
     """Called by: console."""
     await service.delete_sponsor(event_id, sponsor_id)
+
+
+@router.delete("/{event_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_event(
+    event_id: uuid.UUID,
+    current_user: User = Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN)),
+    service: EventService = Depends(get_event_service),
+):
+    await service.delete_event(event_id, current_user.id)

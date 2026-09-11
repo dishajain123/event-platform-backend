@@ -2,6 +2,7 @@
 Identity endpoints — auth (used by both mobile app and console) and
 identity document management.
 """
+import uuid
 from fastapi import APIRouter, Depends, Query, Request, status
 import jwt
 from redis.asyncio import Redis
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import get_current_user, require_role
 from app.modules.identity.models import User
+from app.modules.identity.exceptions import AccountDisabledError
 from app.modules.identity.schemas import (
     AccountOut,
     AccountStatusUpdateIn,
@@ -147,7 +149,7 @@ async def refresh_token(
         raise InvalidTokenError("This session has been signed out.")
     user = await service.get_user_or_raise(_uuid.UUID(claims["sub"]))
     if not user.is_active:
-        raise InvalidTokenError("User not found or inactive.")
+        raise AccountDisabledError()
     access, refresh = service.issue_tokens(user.id)
     return TokenPairOut(access_token=access, refresh_token=refresh)
 
@@ -188,48 +190,38 @@ async def find_or_create_user_for_admin_provisioning(
     opened the public app.
     """
     user, _created = await service.find_or_create_for_admin_provisioning(
-        payload.mobile_number, payload.name
+        payload.mobile_number, payload.name,
+        is_event_manager=payload.is_event_manager, actor_user_id=current_user.id,
     )
     return UserOut.model_validate(user)
 
 
-@router.get(
-    "/users/accounts",
-    response_model=list[AccountOut] | Page[AccountOut],
-    dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN, RoleName.FINANCE_ADMIN))],
-)
-async def list_accounts(page: int | None = Query(None, ge=1), page_size: int = Query(25, ge=1, le=100), service: IdentityService = Depends(get_identity_service)) -> list[AccountOut] | Page[AccountOut]:
-    """Called by: console account management."""
-    if not isinstance(page, int):
-        page = None
-    if not isinstance(page_size, int):
-        page_size = 25
-    if page is None:
-        return [AccountOut.model_validate(account) for account in await service.list_accounts()]
-    items, total = await service.page_accounts(page=page, page_size=page_size)
-    return Page(items=[AccountOut.model_validate(account) for account in items], total=total, page=page, page_size=page_size)
+@router.get("/users/event-managers", response_model=list[UserOut],
+    dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN))])
+async def list_event_managers(service: IdentityService = Depends(get_identity_service)):
+    return await service.list_event_managers()
 
 
-@router.patch(
-    "/users/{user_id}/status",
-    response_model=UserOut,
-    dependencies=[Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN, RoleName.FINANCE_ADMIN))],
-)
+@router.get("/users/accounts", response_model=list[AccountOut] | Page[AccountOut])
+async def list_accounts(
+    page: int | None = Query(None, ge=1), page_size: int = Query(25, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    service: IdentityService = Depends(get_identity_service),
+):
+    items, total = await service.manageable_accounts(current_user, page, page_size)
+    results = [AccountOut.model_validate(account) for account in items]
+    return Page(items=results, total=total, page=page, page_size=page_size) if page else results
+
+
+@router.patch("/users/{user_id}/status", response_model=UserOut)
 async def update_account_status(
-    user_id: str,
+    user_id: uuid.UUID,
     payload: AccountStatusUpdateIn,
     current_user: User = Depends(get_current_user),
     service: IdentityService = Depends(get_identity_service),
-) -> UserOut:
-    """Called by: console account management."""
-    import uuid as _uuid
-
-    user = await service.update_account_status(
-        actor=current_user,
-        target_user_id=_uuid.UUID(user_id),
-        is_active=payload.is_active,
-    )
-    return UserOut.model_validate(user)
+):
+    return await service.update_account_status(actor=current_user,
+        target_user_id=user_id, is_active=payload.is_active)
 
 
 @router.get("/users/me", response_model=UserOut)
@@ -284,3 +276,13 @@ async def list_my_identity_documents(
     """
     docs = await service.list_identity_documents(current_user.id)
     return [IdentityDocumentOut.model_validate(doc) for doc in docs]
+
+
+@router.post("/users/{user_id}/event-manager", response_model=UserOut)
+async def designate_event_manager(
+    user_id: str,
+    current_user: User = Depends(require_role(RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN)),
+    service: IdentityService = Depends(get_identity_service),
+):
+    import uuid
+    return await service.designate_event_manager(uuid.UUID(user_id), current_user.id)

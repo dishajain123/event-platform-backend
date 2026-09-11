@@ -4,6 +4,7 @@ expiry, resend cooldown, and attempt limits (all enforced via Redis,
 since OTP state is short-lived and doesn't belong in Postgres); JWT
 session issuance; identity document encryption.
 """
+from app.modules.identity.exceptions import AccountDisabledError
 import uuid
 import hashlib
 import time
@@ -11,6 +12,9 @@ import time
 from cryptography.fernet import Fernet
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from app.core.permissions import can_manage_account, user_has_global_role
+from app.modules.events.models import Event
 
 from app.config import get_settings
 from app.core.audit import write_audit_log
@@ -95,6 +99,9 @@ class IdentityService:
         integration. Returns seconds until the next resend is allowed.
         """
         normalized_mobile = normalize_mobile_number(mobile_number)
+        existing = await self.users.get_by_mobile_number(normalized_mobile)
+        if existing is not None and not existing.is_active:
+            raise AccountDisabledError()
 
         cooldown_key = _otp_cooldown_key(normalized_mobile)
         if await self.redis.get(cooldown_key):
@@ -143,6 +150,9 @@ class IdentityService:
 
     async def verify_otp(self, mobile_number: str, otp: str) -> User:
         normalized_mobile = normalize_mobile_number(mobile_number)
+        existing = await self.users.get_by_mobile_number(normalized_mobile)
+        if existing is not None and not existing.is_active:
+            raise AccountDisabledError()
         attempts_key = _otp_attempts_key(normalized_mobile)
         attempts = int(await self.redis.get(attempts_key) or 0)
         if attempts >= settings.otp_max_verify_attempts:
@@ -164,6 +174,8 @@ class IdentityService:
         await self.redis.delete(attempts_key)
 
         user, _created = await self.users.get_or_create(normalized_mobile)
+        if not user.is_active:
+            raise AccountDisabledError()
         await self.db.commit()
         return user
 
@@ -205,6 +217,8 @@ class IdentityService:
         user = await self.users.get_by_email(normalized)
         if user is None or user.password_hash is None:
             raise InvalidOTPError("Invalid verification code.")
+        if not user.is_active:
+            raise AccountDisabledError()
         await self._verify_email_code(normalized, code, "verify")
         from datetime import datetime, timezone
 
@@ -216,7 +230,7 @@ class IdentityService:
     async def resend_email_verification(self, email: str) -> int:
         normalized = email.strip().lower()
         user = await self.users.get_by_email(normalized)
-        if user is None or user.password_hash is None or user.email_verified_at is not None:
+        if user is None or not user.is_active or user.password_hash is None or user.email_verified_at is not None:
             return settings.otp_resend_cooldown_seconds
         return await self._send_email_code(normalized, "verify")
 
@@ -225,7 +239,7 @@ class IdentityService:
         if user is None or not verify_password(password, user.password_hash):
             raise PermissionDeniedError("Invalid email or password.")
         if not user.is_active:
-            raise PermissionDeniedError("This account is inactive.")
+            raise AccountDisabledError()
         if user.email_verified_at is None:
             raise PermissionDeniedError("Verify your email before signing in.")
         return user
@@ -249,7 +263,7 @@ class IdentityService:
         user = await self.users.get_by_email(normalized)
         # Do not reveal whether an email is registered. The caller receives
         # the same success-shaped response either way.
-        if user is None or user.password_hash is None:
+        if user is None or not user.is_active or user.password_hash is None:
             return settings.otp_resend_cooldown_seconds
         return await self._send_email_code(normalized, "reset")
 
@@ -258,6 +272,8 @@ class IdentityService:
         user = await self.users.get_by_email(normalized)
         if user is None or user.password_hash is None:
             raise InvalidOTPError("Invalid or expired reset code.")
+        if not user.is_active:
+            raise AccountDisabledError()
         await self._verify_email_code(normalized, code, "reset")
         user.password_hash = hash_password(new_password)
         await self.db.commit()
@@ -296,7 +312,7 @@ class IdentityService:
         return user
 
     async def find_or_create_for_admin_provisioning(
-        self, mobile_number: str, name: str | None = None
+        self, mobile_number: str, name: str | None = None, *, is_event_manager: bool = False, actor_user_id: uuid.UUID | None = None
     ) -> tuple[User, bool]:
         """
         Console-only path (see AdminUserLookupIn) for provisioning a
@@ -306,13 +322,50 @@ class IdentityService:
         flow already relies on, so there's exactly one place a User row
         is ever created from a mobile number, whichever path triggers it.
         """
+        if is_event_manager and (actor_user_id is None or not await user_has_global_role(
+            self.db, actor_user_id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN}
+        )):
+            raise PermissionDeniedError("Only Operations or Super Admin can designate event managers.")
         normalized_mobile = normalize_mobile_number(mobile_number)
+        existing = await self.users.get_by_mobile_number(normalized_mobile)
+        if existing is not None and not existing.is_active:
+            raise AccountDisabledError()
         user, created = await self.users.get_or_create(normalized_mobile)
         if name and not user.name:
             user.name = name
+        if is_event_manager:
+            if not user.is_active:
+                raise ConflictError("Reactivate this account before designating it as an Event Manager.")
+            user.is_event_manager = True
+            await write_audit_log(self.db, entity_type="user", entity_id=user.id,
+                action="event_manager_designated", actor_user_id=actor_user_id,
+                after_value={"is_event_manager": True})
         await self.db.commit()
         await self.db.refresh(user)
         return user, created
+
+    async def list_event_managers(self):
+        result = await self.db.execute(select(User).where(
+            User.is_event_manager.is_(True), User.is_active.is_(True)
+        ).order_by(User.name, User.id))
+        return list(result.scalars().all())
+
+    async def designate_event_manager(self, target_user_id, actor_user_id):
+        if not await user_has_global_role(self.db, actor_user_id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN}):
+            raise PermissionDeniedError("Only Operations or Super Admin can designate Event Managers.")
+        user = await self.get_user_or_raise(target_user_id)
+        if not user.is_active:
+            raise ConflictError("Reactivate the account before designating it as an Event Manager.")
+        user.is_event_manager = True
+        await write_audit_log(self.db, entity_type="user", entity_id=user.id,
+            action="event_manager_designated", actor_user_id=actor_user_id)
+        await self.db.commit()
+        return user
+
+    async def managed_events(self, user_id):
+        result = await self.db.execute(select(Event.id, Event.name).where(
+            Event.organizer_user_id == user_id, Event.deleted_at.is_(None)))
+        return [{"id": str(row.id), "name": row.name} for row in result]
 
     async def list_accounts(self) -> list[dict]:
         users = await self.users.list_all()
@@ -343,6 +396,8 @@ class IdentityService:
                     "email": user.email,
                     "is_active": user.is_active,
                     "roles": roles,
+                    "is_event_manager": user.is_event_manager,
+                    "managed_events": await self.managed_events(user.id),
                 }
             )
 
@@ -366,8 +421,20 @@ class IdentityService:
                             "status": assignment.status.value,
                         }
                     )
-            results.append({"id": user.id, "mobile_number": user.mobile_number, "name": user.name, "email": user.email, "is_active": user.is_active, "roles": roles})
+            results.append({"id": user.id, "mobile_number": user.mobile_number, "name": user.name, "email": user.email, "is_active": user.is_active, "is_event_manager": user.is_event_manager, "managed_events": await self.managed_events(user.id), "roles": roles})
         return results, total
+
+    async def manageable_accounts(self, actor, page=None, page_size=25):
+        result = []
+        can_provision = await user_has_global_role(self.db, actor.id, {RoleName.SUPER_ADMIN, RoleName.OPERATIONS_ADMIN})
+        for account in await self.list_accounts():
+            target = await self.users.get_by_id(account["id"])
+            allowed = await can_manage_account(self.db, actor, target)
+            if can_provision or allowed or target.id == actor.id:
+                account["can_manage_status"] = allowed
+                result.append(account)
+        total = len(result)
+        return (result[(page-1)*page_size:page*page_size] if page else result), total
 
     async def update_account_status(
         self,
@@ -376,45 +443,34 @@ class IdentityService:
         target_user_id: uuid.UUID,
         is_active: bool,
     ) -> User:
-        target_user = await self.users.get_by_id(target_user_id)
+        # Lock both accounts in stable order: concurrent admins cannot disable
+        # one another using stale actor status. Target locking also serializes
+        # against primary manager assignment.
+        locked = list((await self.db.execute(select(User).where(User.id.in_([actor.id, target_user_id]))
+            .order_by(User.id).with_for_update().execution_options(populate_existing=True))).scalars())
+        actor = next((user for user in locked if user.id == actor.id), None)
+        if actor is None:
+            raise PermissionDeniedError("Acting account not found.")
+        target_user = next((user for user in locked if user.id == target_user_id), None)
         if target_user is None:
             raise UserNotFoundError("User not found.")
+        if actor.id == target_user.id:
+            raise PermissionDeniedError("You cannot change your own account status.")
+        if not await can_manage_account(self.db, actor, target_user):
+            raise PermissionDeniedError("You cannot manage this account's status or its event scope.")
+        if target_user.is_active == is_active:
+            return target_user
 
-        actor_roles = await self.rbac.get_active_role_names_for_user(actor.id)
-        target_roles = await self.rbac.get_active_role_names_for_user(target_user.id)
-
-        if RoleName.SUPER_ADMIN not in actor_roles:
-            if RoleName.OPERATIONS_ADMIN in actor_roles:
-                disallowed = target_roles - {
-                    RoleName.OPERATIONS_ADMIN,
-                    RoleName.EVENT_MANAGER,
-                    RoleName.EVENT_COORDINATOR,
-                    RoleName.STAFF_LEAD,
-                    RoleName.STAFF_MEMBER,
-                }
-                if disallowed:
-                    raise PermissionDeniedError("You don't have permission to manage this account.")
-            elif RoleName.FINANCE_ADMIN in actor_roles:
-                disallowed = target_roles - {
-                    RoleName.FINANCE_ADMIN,
-                    RoleName.FINANCE_OPERATOR,
-                    RoleName.FINANCE_AUDITOR,
-                }
-                if disallowed:
-                    raise PermissionDeniedError("You don't have permission to manage this account.")
-            else:
-                raise PermissionDeniedError("You don't have permission to manage this account.")
-
-        before = {"is_active": target_user.is_active}
+        before = {"is_active": target_user.is_active, "status": "ACTIVE" if target_user.is_active else "DISABLED"}
         target_user.is_active = is_active
         await write_audit_log(
             self.db,
             entity_type="user",
             entity_id=target_user.id,
-            action="updated_status",
+            action="account_reactivated" if is_active else "account_disabled",
             actor_user_id=actor.id,
             before_value=before,
-            after_value={"is_active": is_active},
+            after_value={"is_active": is_active, "status": "ACTIVE" if is_active else "DISABLED"},
         )
         await self.db.commit()
         await self.db.refresh(target_user)

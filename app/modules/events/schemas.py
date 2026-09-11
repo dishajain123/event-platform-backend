@@ -17,7 +17,7 @@ class EventCreateIn(BaseModel):
     sub_category_id: uuid.UUID | None = None
     start_date: datetime
     end_date: datetime
-    organizer_user_id: uuid.UUID | None = None
+    organizer_user_id: uuid.UUID
     organization_id: uuid.UUID | None = None
 
 
@@ -33,6 +33,7 @@ class EventUpdateIn(BaseModel):
 
 
 class EventDuplicateIn(BaseModel):
+    organizer_user_id: uuid.UUID | None = None
     name: str = Field(min_length=1, max_length=255)
     start_date: datetime
     end_date: datetime
@@ -88,6 +89,7 @@ class EventOut(BaseModel):
     start_date: datetime
     end_date: datetime
     status: EventStatus
+    image_url: str | None = None
 
 
 class EventManagerOverviewOut(BaseModel):
