@@ -86,3 +86,29 @@ async def test_public_category_read_does_not_delete_inactive_children(db_session
     await db_session.commit()
     assert (await db_session.execute(select(SubCategory).where(SubCategory.id == child.id))).scalar_one() is child
     assert len((await service.list_main_categories(include_inactive=True))[0].sub_categories) == 1
+
+
+@pytest.mark.asyncio
+async def test_home_taxonomy_is_ordered_and_reflects_console_edits(db_session):
+    db = db_session
+    user = User(mobile_number="+919876540002")
+    main = MainCategory(name="Home", description="Fallback")
+    db.add_all([user, main])
+    await db.flush()
+    db.add_all([SubCategory(name=name, main_category_id=main.id)
+                for name in ["Youth", "Business", "Sports", "Culture"]])
+    await db.commit()
+    service = EventCategoryService(db)
+    taxonomy = await service.list_main_categories()
+    assert [s.name for s in taxonomy[0].sub_categories] == ["Business", "Culture", "Sports", "Youth"]
+    sports = next(s for s in taxonomy[0].sub_categories if s.name == "Sports")
+    await service.update_sub_category(sports.id, user.id, name="Arts")
+    taxonomy = await service.list_main_categories()
+    assert [s.name for s in taxonomy[0].sub_categories] == ["Arts", "Business", "Culture", "Youth"]
+    await service.update_sub_category(sports.id, user.id, is_active=False)
+    taxonomy = await service.list_main_categories()
+    assert [s.name for s in taxonomy[0].sub_categories] == ["Business", "Culture", "Youth"]
+    await service.update_main_category(main.id, user.id, description="Updated fallback")
+    assert (await service.list_main_categories())[0].description == "Updated fallback"
+    await service.update_main_category(main.id, user.id, is_active=False)
+    assert await service.list_main_categories() == []

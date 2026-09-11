@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import Boolean, ForeignKey, String, Text, Index, text
+from sqlalchemy import Boolean, ForeignKey, String, Text, Index, text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base_model import Base, TimestampMixin, UUIDPrimaryKeyMixin, UUIDType, SoftDeleteMixin
@@ -27,6 +27,7 @@ class MainCategory(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
         "SubCategory",
         back_populates="main_category",
         cascade="all, delete-orphan",
+        order_by=lambda: (func.lower(SubCategory.name).asc(), SubCategory.id.asc()),
     )
 
 
