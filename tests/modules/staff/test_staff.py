@@ -261,6 +261,16 @@ async def test_invitee_can_discover_their_own_pending_and_active_assignments(db_
     assert statuses[invited_assignment.id] == StaffAssignmentStatus.INVITED
     assert statuses[accepted_assignment.id] == StaffAssignmentStatus.ACTIVE
 
+    # Regression: "My Events" previously only had role_label to show — no
+    # way to tell WHICH event or WHEN. Each assignment must now come back
+    # enriched with its event's name/dates so the mobile screen can render
+    # real event identity, not just a bare role.
+    by_id = {a.id: a for a in mine}
+    assert by_id[invited_assignment.id].event_name == event_a.name
+    assert by_id[invited_assignment.id].event_start_date == event_a.start_date
+    assert by_id[accepted_assignment.id].event_name == event_b.name
+    assert by_id[accepted_assignment.id].event_end_date == event_b.end_date
+
     # A completely unrelated user sees none of these.
     outsider = User(mobile_number="+919400000099")
     db_session.add(outsider)

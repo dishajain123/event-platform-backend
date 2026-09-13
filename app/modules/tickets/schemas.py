@@ -123,6 +123,23 @@ class CheckInOut(BaseModel):
     entry_number: int
 
 
+class LastScannedParticipantOut(BaseModel):
+    ticket_id: uuid.UUID
+    ticket_code: str
+    participant_name: str | None
+    checked_in_at: datetime | None
+
+
+class MyScanStatsOut(BaseModel):
+    """Powers the scan-count badge + last-scanned card in the mobile app's
+    barcode scanner screen — how many participants THIS staff member has
+    personally checked in at this event, and who they most recently scanned."""
+
+    event_id: uuid.UUID
+    scanned_count: int
+    last_scanned: LastScannedParticipantOut | None
+
+
 class CheckInIn(BaseModel):
     venue_id: uuid.UUID | None = None
     access_zone_id: uuid.UUID | None = None

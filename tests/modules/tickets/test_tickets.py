@@ -186,6 +186,40 @@ async def test_online_check_in_can_resolve_a_scanned_ticket_by_payload(db_sessio
 
 
 @pytest.mark.asyncio
+async def test_my_scan_stats_counts_only_this_staff_members_own_scans(db_session):
+    """
+    Regression test for the mobile scanner's "scans by me" badge: two
+    different staff members check in tickets at the same event, and each
+    should only see their own count/last-scanned ticket, never the
+    other's — scanned_by must actually scope the read, not just the write.
+    """
+    ctx = await _make_ticket_context(db_session)
+    other_staff = User(mobile_number="+919310000004")
+    db_session.add(other_staff)
+    await db_session.flush()
+    await _assign_role(db_session, other_staff, RoleName.EVENT_MANAGER, ctx["event"].id)
+
+    service = TicketService(db_session)
+    ticket = ctx["ticket"]
+
+    zero_stats = await service.my_scan_stats(ctx["event"].id, ctx["staff"])
+    assert zero_stats.scanned_count == 0
+    assert zero_stats.last_scanned is None
+
+    await service.check_in(ticket.id, ctx["staff"], venue_id=None)
+
+    my_stats = await service.my_scan_stats(ctx["event"].id, ctx["staff"])
+    assert my_stats.scanned_count == 1
+    assert my_stats.last_scanned is not None
+    assert my_stats.last_scanned.ticket_id == ticket.id
+    assert my_stats.last_scanned.ticket_code == ticket.ticket_code
+
+    other_stats = await service.my_scan_stats(ctx["event"].id, other_staff)
+    assert other_stats.scanned_count == 0
+    assert other_stats.last_scanned is None
+
+
+@pytest.mark.asyncio
 async def test_structured_validation_covers_signature_scope_and_valid_ticket(db_session):
     ctx = await _make_ticket_context(db_session)
     service = TicketService(db_session)

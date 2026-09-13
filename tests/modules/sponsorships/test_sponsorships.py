@@ -6,13 +6,15 @@ from sqlalchemy import select
 
 from app.exceptions import ConflictError, PermissionDeniedError, ValidationError
 from app.modules.config_engine.service import ConfigEngineService
-from app.modules.events.models import EventStatus
+from app.modules.event_categories.models import MainCategory, SubCategory
+from app.modules.events.models import Event, EventStatus, Sponsor
 from app.modules.events.service import EventService
 from app.modules.identity.models import User
 from app.modules.rbac.models import Role, RoleAssignment, RoleName
 from app.modules.networking.models import EventNetworkingConfig, NetworkingProfile, NetworkingVisibility
 from app.modules.registrations.models import Registration, RegistrationStatus
 from app.modules.sponsorships.models import SponsorEngagementType, SponsorLeadStatus, SponsorshipDeliverableStatus, SponsorshipInquiryStatus
+from app.modules.sponsorships.repository import SponsorshipRepository
 from app.modules.sponsorships.service import SponsorshipService
 
 
@@ -191,3 +193,39 @@ async def test_sponsor_fulfillment_metrics_and_scope(db_session):
     assert summary.completed_deliverables == 1
     assert summary.overdue_deliverables == 0
     assert summary.fulfillment_percentage == 50.0
+
+
+@pytest.mark.asyncio
+async def test_page_sponsors_filters_by_main_and_sub_category(db_session):
+    creator = User(mobile_number="+919700000035")
+    db_session.add(creator)
+    await db_session.flush()
+    main = MainCategory(name="Conferences")
+    other_main = MainCategory(name="Meetups")
+    db_session.add_all([main, other_main])
+    await db_session.flush()
+    sub = SubCategory(main_category_id=main.id, name="Tech")
+    db_session.add(sub)
+    await db_session.flush()
+
+    matching_event = await _public_event(db_session, creator)
+    other_event = await _public_event(db_session, creator)
+    matching_event.main_category_id = main.id
+    matching_event.sub_category_id = sub.id
+    other_event.main_category_id = other_main.id
+    await db_session.commit()
+
+    repo = SponsorshipRepository(db_session)
+    db_session.add_all([
+        Sponsor(event_id=matching_event.id, name="Matching Sponsor", category="Branding"),
+        Sponsor(event_id=other_event.id, name="Other Sponsor", category="Branding"),
+    ])
+    await db_session.commit()
+
+    items, total = await repo.page_sponsors(main_category_id=main.id, page=1, page_size=25)
+    assert total == 1
+    assert items[0].event_id == matching_event.id
+
+    items, total = await repo.page_sponsors(sub_category_id=sub.id, page=1, page_size=25)
+    assert total == 1
+    assert items[0].event_id == matching_event.id

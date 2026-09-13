@@ -1,5 +1,6 @@
 services:
   postgres:
+    restart: unless-stopped
     image: postgres:16
     environment:
       POSTGRES_USER: postgres
@@ -16,6 +17,7 @@ services:
       retries: 5
 
   redis:
+    restart: unless-stopped
     image: redis:7
     ports:
       - "6379:6379"
@@ -26,14 +28,27 @@ services:
       retries: 5
 
   minio:
+    restart: unless-stopped
     image: minio/minio:RELEASE.2025-06-13T11-33-47Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      # The minio/minio image bakes in MINIO_ROOT_USER_FILE / _PASSWORD_FILE
+      # pointing at /access_key and /secret_key, which don't exist in this
+      # container. When those _FILE vars are set, MinIO ignores the plain
+      # MINIO_ROOT_USER/PASSWORD above and silently ends up with different
+      # (unusable) root credentials — every S3 call then fails with
+      # InvalidAccessKeyId even though the values above look correct.
+      # Clearing them here restores the plain env vars as the source of truth.
+      MINIO_ROOT_USER_FILE: ""
+      MINIO_ROOT_PASSWORD_FILE: ""
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      # Not 9000/9001 — another, unrelated project's MinIO container is
+      # already bound to those ports on this machine. Using distinct ports
+      # keeps this project's MinIO fully isolated from it.
+      - "9010:9000"
+      - "9011:9001"
     volumes:
       - minio_data:/data
     healthcheck:

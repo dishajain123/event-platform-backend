@@ -99,8 +99,9 @@ class FeedbackService:
         distribution = {rating: 0 for rating in range(1, 6)}
         category_rows: dict[FeedbackCategory, list[int]] = {}
         for row in rows:
+            category = row.category if isinstance(row.category, FeedbackCategory) else FeedbackCategory(row.category)
             distribution[row.rating] += 1
-            category_rows.setdefault(row.category, []).append(row.rating)
+            category_rows.setdefault(category, []).append(row.rating)
         return FeedbackSummaryOut(
             response_count=len(rows),
             overall_rating=round(sum(row.rating for row in rows) / len(rows), 2) if rows else None,

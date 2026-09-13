@@ -7,12 +7,23 @@ Because app/core/base_model.py uses SQLAlchemy's dialect-agnostic Uuid
 type, the exact same model code is exercised here as in production
 against Postgres.
 """
+import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
+from app.config import get_settings
 from app.core import model_registry  # noqa: F401
 from app.core.base_model import Base
 from app.modules.rbac.models import SCOPED_ROLES, Role, RoleName
+
+
+@pytest.fixture(autouse=True)
+def _no_real_object_storage(monkeypatch):
+    """Tests must exercise the deterministic local-storage-fallback path in
+    object_storage.py regardless of whatever MINIO_* happens to be set to
+    in the real .env — the same reasoning as db_session using SQLite
+    instead of real Postgres and fake_redis instead of a real Redis."""
+    monkeypatch.setattr(get_settings(), "minio_endpoint", "")
 
 
 @pytest_asyncio.fixture

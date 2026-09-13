@@ -197,7 +197,10 @@ class SponsorshipRepository:
         result = await self.db.execute(select(Sponsor).where(Sponsor.id == sponsor_id))
         return result.scalar_one_or_none()
 
-    async def page_sponsors(self, *, event_ids=None, status=None, category=None, search=None, page=1, page_size=25):
+    async def page_sponsors(
+        self, *, event_ids=None, status=None, category=None, search=None,
+        main_category_id=None, sub_category_id=None, page=1, page_size=25,
+    ):
         if event_ids is not None and not event_ids:
             return [], 0
         filters = []
@@ -210,8 +213,24 @@ class SponsorshipRepository:
         if search:
             term = f"%{search.strip()}%"
             filters.append(Sponsor.name.ilike(term) | Sponsor.contact_email.ilike(term))
-        total = await self.db.scalar(select(func.count(Sponsor.id)).where(*filters)) or 0
-        result = await self.db.execute(select(Sponsor).where(*filters).order_by(Sponsor.created_at.desc(), Sponsor.id.desc()).offset((page - 1) * page_size).limit(page_size))
+
+        needs_event_join = main_category_id is not None or sub_category_id is not None
+        if needs_event_join:
+            if main_category_id is not None:
+                filters.append(Event.main_category_id == main_category_id)
+            if sub_category_id is not None:
+                filters.append(Event.sub_category_id == sub_category_id)
+
+        count_statement = select(func.count(Sponsor.id))
+        list_statement = select(Sponsor)
+        if needs_event_join:
+            count_statement = count_statement.join(Event, Event.id == Sponsor.event_id)
+            list_statement = list_statement.join(Event, Event.id == Sponsor.event_id)
+
+        total = await self.db.scalar(count_statement.where(*filters)) or 0
+        result = await self.db.execute(
+            list_statement.where(*filters).order_by(Sponsor.created_at.desc(), Sponsor.id.desc()).offset((page - 1) * page_size).limit(page_size)
+        )
         return list(result.scalars().all()), int(total)
 
     async def list_deliverables(self, sponsor_id: uuid.UUID, *, status=None, search=None):

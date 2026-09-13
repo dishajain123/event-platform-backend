@@ -649,6 +649,35 @@ class TicketService:
     async def list_checkins(self, event_id: uuid.UUID, venue_id: uuid.UUID | None = None) -> list[CheckIn]:
         return await self.checkins.list_for_event(event_id, venue_id)
 
+    async def my_scan_stats(self, event_id: uuid.UUID, actor: User) -> "MyScanStatsOut":
+        """
+        How many participants the current staff member has personally
+        checked in at this event, plus who they most recently scanned —
+        scanned_by/checked_in_at have always been recorded on CheckIn, this
+        is just the first place they're read back for the scanner itself.
+        """
+        from app.modules.registrations.models import RegistrationParticipant
+        from app.modules.tickets.schemas import LastScannedParticipantOut, MyScanStatsOut
+
+        count = await self.checkins.count_for_scanner(event_id, actor.id)
+        latest = await self.checkins.get_latest_for_scanner(event_id, actor.id)
+
+        last_scanned = None
+        if latest is not None:
+            ticket = await self.tickets.get_by_id(latest.ticket_id)
+            participant_name = None
+            if ticket is not None and ticket.participant_id is not None:
+                participant = await self.db.get(RegistrationParticipant, ticket.participant_id)
+                participant_name = participant.full_name if participant is not None else None
+            last_scanned = LastScannedParticipantOut(
+                ticket_id=latest.ticket_id,
+                ticket_code=ticket.ticket_code if ticket is not None else "",
+                participant_name=participant_name,
+                checked_in_at=latest.created_at,
+            )
+
+        return MyScanStatsOut(event_id=event_id, scanned_count=count, last_scanned=last_scanned)
+
     async def sync_offline_checkins(self, actor: User, scans: list[OfflineCheckInIn]) -> list[CheckIn]:
         processed: list[CheckIn] = []
         for scan in scans:

@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.core.permissions import user_scoped_event_ids
 from app.exceptions import PermissionDeniedError
+from app.modules.event_categories.models import MainCategory, SubCategory
 from app.modules.events.models import EventStatus
 from app.modules.events.service import EventService
 from app.modules.feedback.exceptions import FeedbackEventUnavailableError
@@ -89,6 +90,67 @@ def test_feedback_schema_validates_rating_and_category():
             category="not_a_feedback_category",
             rating=4,
         )
+
+
+@pytest.mark.asyncio
+async def test_summary_scoped_groups_by_category_with_real_rows(db_session):
+    event = await _event(db_session, "Summary Feedback Event")
+    user_a = User(mobile_number="+919700000006")
+    user_b = User(mobile_number="+919700000007")
+    db_session.add_all([user_a, user_b])
+    await db_session.commit()
+    service = FeedbackService(db_session)
+
+    await service.submit(user_a, event.id, FeedbackCategory.EVENT_EXPERIENCE, 5, "Great")
+    await service.submit(user_b, event.id, FeedbackCategory.EVENT_EXPERIENCE, 3, "Ok")
+    await service.submit(user_a, event.id, FeedbackCategory.VENUE_FACILITIES, 2, "Cramped")
+
+    summary = await service.summary_scoped(event_ids=None, event_id=event.id)
+
+    assert summary.response_count == 3
+    assert summary.overall_rating == round(10 / 3, 2)
+    by_category = {row.category: row for row in summary.category_summaries}
+    assert by_category[FeedbackCategory.EVENT_EXPERIENCE].response_count == 2
+    assert by_category[FeedbackCategory.EVENT_EXPERIENCE].average_rating == 4.0
+    assert by_category[FeedbackCategory.VENUE_FACILITIES].response_count == 1
+    assert summary.rating_distribution[5] == 1
+    assert summary.rating_distribution[3] == 1
+    assert summary.rating_distribution[2] == 1
+
+
+@pytest.mark.asyncio
+async def test_list_and_summary_filter_by_main_and_sub_category(db_session):
+    main = MainCategory(name="Conferences")
+    other_main = MainCategory(name="Meetups")
+    db_session.add_all([main, other_main])
+    await db_session.flush()
+    sub = SubCategory(main_category_id=main.id, name="Tech")
+    db_session.add(sub)
+    await db_session.commit()
+
+    matching_event = await _event(db_session, "Matching Category Event")
+    other_event = await _event(db_session, "Other Category Event")
+    matching_event.main_category_id = main.id
+    matching_event.sub_category_id = sub.id
+    other_event.main_category_id = other_main.id
+    await db_session.commit()
+
+    user = User(mobile_number="+919700000008")
+    db_session.add(user)
+    await db_session.commit()
+    service = FeedbackService(db_session)
+    await service.submit(user, matching_event.id, FeedbackCategory.EVENT_EXPERIENCE, 4, "Good")
+    await service.submit(user, other_event.id, FeedbackCategory.EVENT_EXPERIENCE, 1, "Bad")
+
+    rows = await service.list_scoped(event_ids=None, main_category_id=main.id)
+    assert {row.event_id for row in rows} == {matching_event.id}
+
+    rows = await service.list_scoped(event_ids=None, sub_category_id=sub.id)
+    assert {row.event_id for row in rows} == {matching_event.id}
+
+    summary = await service.summary_scoped(event_ids=None, main_category_id=main.id)
+    assert summary.response_count == 1
+    assert summary.overall_rating == 4.0
 
 
 @pytest.mark.asyncio

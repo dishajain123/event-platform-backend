@@ -93,6 +93,8 @@ async def razorpay_webhook(
 @router.get("", response_model=list[PaymentOut] | Page[PaymentOut], dependencies=[Depends(require_role(RoleName.FINANCE_ADMIN, RoleName.FINANCE_OPERATOR, RoleName.FINANCE_AUDITOR, RoleName.SUPER_ADMIN))])
 async def list_payments(
     event_id: str | None = None,
+    main_category_id: str | None = None,
+    sub_category_id: str | None = None,
     page: int | None = Query(default=None, ge=1),
     page_size: int = Query(default=25, ge=1, le=100),
     search: str | None = Query(default=None, max_length=100),
@@ -108,6 +110,8 @@ async def list_payments(
     if page is not None:
         items, total = await service.page_payments(
             event_id=uuid.UUID(event_id) if event_id else None,
+            main_category_id=uuid.UUID(main_category_id) if main_category_id else None,
+            sub_category_id=uuid.UUID(sub_category_id) if sub_category_id else None,
             page=page, page_size=page_size, search=search, status=payment_status,
         )
         return Page(items=items, total=total, page=page, page_size=page_size)

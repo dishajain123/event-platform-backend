@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.modules.events.models import Event
 from app.modules.feedback.models import EventFeedback, FeedbackCategory
 
 
@@ -47,24 +48,18 @@ class FeedbackRepository:
         result = await self.db.execute(statement)
         return list(result.scalars().all())
 
-    async def list_for_scope(
-        self,
+    @staticmethod
+    def _apply_common_filters(
+        statement,
         event_ids: set[uuid.UUID] | None,
-        event_id: uuid.UUID | None = None,
-        category: FeedbackCategory | None = None,
-        rating: int | None = None,
-        date_from: datetime | None = None,
-        date_to: datetime | None = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[EventFeedback]:
-        statement = (
-            select(EventFeedback)
-            .options(selectinload(EventFeedback.event), selectinload(EventFeedback.user))
-            .order_by(EventFeedback.created_at.desc())
-            .limit(limit)
-            .offset(offset)
-        )
+        event_id: uuid.UUID | None,
+        category: FeedbackCategory | None,
+        rating: int | None,
+        date_from: datetime | None,
+        date_to: datetime | None,
+        main_category_id: uuid.UUID | None,
+        sub_category_id: uuid.UUID | None,
+    ):
         if event_id is not None:
             statement = statement.where(EventFeedback.event_id == event_id)
         elif event_ids is not None:
@@ -77,6 +72,37 @@ class FeedbackRepository:
             statement = statement.where(EventFeedback.created_at >= date_from)
         if date_to is not None:
             statement = statement.where(EventFeedback.created_at <= date_to)
+        if main_category_id is not None or sub_category_id is not None:
+            statement = statement.join(Event, Event.id == EventFeedback.event_id)
+            if main_category_id is not None:
+                statement = statement.where(Event.main_category_id == main_category_id)
+            if sub_category_id is not None:
+                statement = statement.where(Event.sub_category_id == sub_category_id)
+        return statement
+
+    async def list_for_scope(
+        self,
+        event_ids: set[uuid.UUID] | None,
+        event_id: uuid.UUID | None = None,
+        category: FeedbackCategory | None = None,
+        rating: int | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        main_category_id: uuid.UUID | None = None,
+        sub_category_id: uuid.UUID | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[EventFeedback]:
+        statement = (
+            select(EventFeedback)
+            .options(selectinload(EventFeedback.event), selectinload(EventFeedback.user))
+            .order_by(EventFeedback.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        statement = self._apply_common_filters(
+            statement, event_ids, event_id, category, rating, date_from, date_to, main_category_id, sub_category_id
+        )
         result = await self.db.execute(statement)
         return list(result.scalars().all())
 
@@ -88,20 +114,13 @@ class FeedbackRepository:
         rating: int | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
+        main_category_id: uuid.UUID | None = None,
+        sub_category_id: uuid.UUID | None = None,
     ) -> list[EventFeedback]:
         statement = select(EventFeedback)
-        if event_id is not None:
-            statement = statement.where(EventFeedback.event_id == event_id)
-        elif event_ids is not None:
-            statement = statement.where(EventFeedback.event_id.in_(event_ids))
-        if category is not None:
-            statement = statement.where(EventFeedback.category == category)
-        if rating is not None:
-            statement = statement.where(EventFeedback.rating == rating)
-        if date_from is not None:
-            statement = statement.where(EventFeedback.created_at >= date_from)
-        if date_to is not None:
-            statement = statement.where(EventFeedback.created_at <= date_to)
+        statement = self._apply_common_filters(
+            statement, event_ids, event_id, category, rating, date_from, date_to, main_category_id, sub_category_id
+        )
         result = await self.db.execute(statement)
         return list(result.scalars().all())
 

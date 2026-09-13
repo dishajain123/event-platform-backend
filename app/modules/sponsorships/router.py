@@ -92,6 +92,8 @@ async def list_manageable_sponsors(
     sponsor_status: SponsorStatus | None = Query(None, alias="status"),
     category: str | None = Query(None, max_length=100),
     search: str | None = Query(None, max_length=100),
+    main_category_id: uuid.UUID | None = None,
+    sub_category_id: uuid.UUID | None = None,
     page: int | None = Query(None, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -103,7 +105,10 @@ async def list_manageable_sponsors(
         event_ids = {event_id} if event_id else None
     else:
         event_ids = await service._event_ids_for_manager(current_user, event_id)
-    items, total = await service.repo.page_sponsors(event_ids=event_ids, status=sponsor_status, category=category, search=search, page=page, page_size=page_size)
+    items, total = await service.repo.page_sponsors(
+        event_ids=event_ids, status=sponsor_status, category=category, search=search,
+        main_category_id=main_category_id, sub_category_id=sub_category_id, page=page, page_size=page_size,
+    )
     return Page(items=items, total=total, page=page, page_size=page_size)
 
 

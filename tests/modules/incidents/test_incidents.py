@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 
 from app.exceptions import PermissionDeniedError, ValidationError
 from app.modules.audit_log.models import AuditLog
+from app.modules.event_categories.models import MainCategory, SubCategory
 from app.modules.events.models import Event, EventStatus
 from app.modules.identity.models import User
 from app.modules.incidents.models import IncidentSeverity, IncidentStatus
@@ -76,3 +77,31 @@ async def test_incident_filters_and_pagination_are_bounded(db_session):
     items, total = await service.page(manager, event_id=event.id, status=IncidentStatus.OPEN, severity=IncidentSeverity.LOW, category="venue", assigned_user_id=None, search="Issue", page=2, page_size=2)
     assert total == 3 and len(items) == 1
     assert items[0].created_at <= items[0].created_at
+
+
+@pytest.mark.asyncio
+async def test_incident_page_filters_by_main_and_sub_category(db_session):
+    event, other_event, manager, other_manager, operations = await _fixture(db_session)
+    main = MainCategory(name="Conferences")
+    other_main = MainCategory(name="Meetups")
+    db_session.add_all([main, other_main])
+    await db_session.flush()
+    sub = SubCategory(main_category_id=main.id, name="Tech")
+    db_session.add(sub)
+    await db_session.flush()
+    event.main_category_id = main.id
+    event.sub_category_id = sub.id
+    other_event.main_category_id = other_main.id
+    await db_session.commit()
+
+    service = IncidentService(db_session)
+    await service.create(manager, IncidentCreateIn(event_id=event.id, category="venue", title="In category", description="door", severity=IncidentSeverity.LOW))
+    await service.create(other_manager, IncidentCreateIn(event_id=other_event.id, category="venue", title="Other category", description="door", severity=IncidentSeverity.LOW))
+
+    items, total = await service.page(operations, event_id=None, status=None, severity=None, category=None, assigned_user_id=None, search=None, main_category_id=main.id, page=1, page_size=25)
+    assert total == 1
+    assert items[0].event_id == event.id
+
+    items, total = await service.page(operations, event_id=None, status=None, severity=None, category=None, assigned_user_id=None, search=None, sub_category_id=sub.id, page=1, page_size=25)
+    assert total == 1
+    assert items[0].event_id == event.id

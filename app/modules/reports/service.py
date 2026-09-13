@@ -74,6 +74,10 @@ class ReportService:
         return EventOperationsReportOut(
             event_id=event.id,
             event_name=event.name,
+            main_category_id=event.main_category_id,
+            main_category_name=event.main_category.name if event.main_category else None,
+            sub_category_id=event.sub_category_id,
+            sub_category_name=event.sub_category.name if event.sub_category else None,
             total_registrations=sum(counts_by_status.values()),
             active_registrations=active_count,
             registrations_by_status=[
@@ -236,6 +240,10 @@ class ReportService:
         return EventFinancialReportOut(
             event_id=event.id,
             event_name=event.name,
+            main_category_id=event.main_category_id,
+            main_category_name=event.main_category.name if event.main_category else None,
+            sub_category_id=event.sub_category_id,
+            sub_category_name=event.sub_category.name if event.sub_category else None,
             total_revenue=payments["verified_sum"],
             verified_payment_count=payments["verified_count"],
             pending_payment_count=payments["pending_count"],

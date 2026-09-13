@@ -20,7 +20,7 @@ from app.dependencies import get_current_user
 from app.modules.identity.models import User
 from app.modules.rbac.models import RoleName
 from app.modules.tickets.models import CheckInSource
-from app.modules.tickets.schemas import AccessPolicyIn, AccessPolicyOut, AccessZoneIn, AccessZoneOut, CheckInIn, CheckInOut, OfflineCheckInBatchIn, ResolveTicketIn, TicketAccessTypeIn, TicketOut, TicketReassignIn, TicketTransferIn, TicketTransferOut, TicketTransferPage, TicketValidationOut
+from app.modules.tickets.schemas import AccessPolicyIn, AccessPolicyOut, AccessZoneIn, AccessZoneOut, CheckInIn, CheckInOut, MyScanStatsOut, OfflineCheckInBatchIn, ResolveTicketIn, TicketAccessTypeIn, TicketOut, TicketReassignIn, TicketTransferIn, TicketTransferOut, TicketTransferPage, TicketValidationOut
 from app.modules.tickets.service import TicketService
 from app.core.pagination import Page
 
@@ -283,6 +283,22 @@ async def check_out_ticket(
     service: TicketService = Depends(get_ticket_service),
 ):
     return await service.check_out(uuid.UUID(ticket_id), current_user)
+
+
+@checkins_router.get("/check-ins/mine", response_model=MyScanStatsOut)
+async def my_scan_stats(
+    event_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service),
+):
+    """
+    Called by: mobile Staff Mode barcode scanner. Shows the scanning staff
+    member how many participants they've personally checked in at this
+    event, and who they most recently scanned — scanned_by has always
+    been recorded on every CheckIn row, this is just the first read path
+    for it. Self-scoped only (own scans), so no role gate beyond auth.
+    """
+    return await service.my_scan_stats(uuid.UUID(event_id), current_user)
 
 
 @checkins_router.get("/check-ins", response_model=list[CheckInOut] | Page[CheckInOut])

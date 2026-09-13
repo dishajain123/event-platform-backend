@@ -46,6 +46,15 @@ class StaffAssignmentOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    # Populated only by the "mine" endpoint (see StaffService.list_my_assignments)
+    # so the mobile app's My Events screen can show what event/when/where an
+    # assignment is for instead of just a bare role label. Console endpoints
+    # already have the event in context and leave these as None.
+    event_name: str | None = None
+    event_start_date: datetime | None = None
+    event_end_date: datetime | None = None
+    venue_name: str | None = None
+
 
 class StaffAssignmentHistoryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)

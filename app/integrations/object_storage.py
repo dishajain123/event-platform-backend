@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import secrets
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -61,6 +62,24 @@ class ObjectStorageClient:
         def _create_if_needed() -> None:
             if not client.bucket_exists(bucket):
                 client.make_bucket(bucket)
+            # Uploaded event covers/media are served back to browsers and the
+            # mobile app as plain HTTP URLs (see _build_public_url) — without
+            # an anonymous-read policy those URLs 403 even though the upload
+            # itself succeeded, which looks identical to a broken-image bug
+            # from the client's side. MinIO buckets are private by default,
+            # so this has to be set explicitly on every bucket we create.
+            policy = {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"AWS": ["*"]},
+                        "Action": ["s3:GetObject"],
+                        "Resource": [f"arn:aws:s3:::{bucket}/*"],
+                    }
+                ],
+            }
+            client.set_bucket_policy(bucket, json.dumps(policy))
 
         await asyncio.to_thread(_create_if_needed)
 

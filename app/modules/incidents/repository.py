@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.events.models import Event
 from app.modules.identity.models import User
 from app.modules.incidents.models import Incident, IncidentSeverity, IncidentStatus
 from app.modules.rbac.models import AssignmentStatus, Role, RoleAssignment, RoleName
@@ -23,6 +24,7 @@ class IncidentRepository:
 
     async def page(self, *, event_ids: set[uuid.UUID] | None, event_id=None, status=None,
                    severity=None, category=None, assigned_user_id=None, search=None,
+                   main_category_id=None, sub_category_id=None,
                    page=1, page_size=25):
         filters = []
         if event_ids is not None:
@@ -42,9 +44,23 @@ class IncidentRepository:
         if search:
             term = f"%{search.strip()}%"
             filters.append(or_(Incident.title.ilike(term), Incident.description.ilike(term)))
-        total = int(await self.db.scalar(select(func.count(Incident.id)).where(*filters)) or 0)
+
+        needs_event_join = main_category_id is not None or sub_category_id is not None
+        if needs_event_join:
+            if main_category_id is not None:
+                filters.append(Event.main_category_id == main_category_id)
+            if sub_category_id is not None:
+                filters.append(Event.sub_category_id == sub_category_id)
+
+        count_statement = select(func.count(Incident.id))
+        list_statement = select(Incident)
+        if needs_event_join:
+            count_statement = count_statement.join(Event, Event.id == Incident.event_id)
+            list_statement = list_statement.join(Event, Event.id == Incident.event_id)
+
+        total = int(await self.db.scalar(count_statement.where(*filters)) or 0)
         result = await self.db.execute(
-            select(Incident).where(*filters)
+            list_statement.where(*filters)
             .order_by(Incident.created_at.desc(), Incident.id.desc())
             .offset((page - 1) * page_size).limit(page_size)
         )

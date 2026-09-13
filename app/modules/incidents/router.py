@@ -31,10 +31,12 @@ async def list_incidents(
     category: str | None = Query(None, max_length=80),
     assigned_user_id: uuid.UUID | None = None,
     search: str | None = Query(None, max_length=100),
+    main_category_id: uuid.UUID | None = None,
+    sub_category_id: uuid.UUID | None = None,
     page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100),
     current_user: User = Depends(get_current_user), service: IncidentService = Depends(get_service),
 ):
-    items, total = await service.page(current_user, event_id=event_id, status=incident_status, severity=severity, category=category, assigned_user_id=assigned_user_id, search=search, page=page, page_size=page_size)
+    items, total = await service.page(current_user, event_id=event_id, status=incident_status, severity=severity, category=category, assigned_user_id=assigned_user_id, search=search, main_category_id=main_category_id, sub_category_id=sub_category_id, page=page, page_size=page_size)
     return Page(items=items, total=total, page=page, page_size=page_size)
 
 

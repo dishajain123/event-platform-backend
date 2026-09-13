@@ -14,6 +14,10 @@ class RegistrationStatusBreakdown(BaseModel):
 class EventOperationsReportOut(BaseModel):
     event_id: uuid.UUID
     event_name: str
+    main_category_id: uuid.UUID | None = None
+    main_category_name: str | None = None
+    sub_category_id: uuid.UUID | None = None
+    sub_category_name: str | None = None
     total_registrations: int
     active_registrations: int
     registrations_by_status: list[RegistrationStatusBreakdown]
@@ -35,6 +39,10 @@ class PlatformOperationsReportOut(BaseModel):
 class EventFinancialReportOut(BaseModel):
     event_id: uuid.UUID
     event_name: str
+    main_category_id: uuid.UUID | None = None
+    main_category_name: str | None = None
+    sub_category_id: uuid.UUID | None = None
+    sub_category_name: str | None = None
     total_revenue: Decimal
     verified_payment_count: int
     pending_payment_count: int

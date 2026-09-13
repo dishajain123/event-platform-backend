@@ -138,3 +138,29 @@ class CheckInRepository:
             .offset((page - 1) * page_size).limit(page_size)
         )
         return list(result.scalars().all()), total
+
+    async def count_for_scanner(self, event_id: uuid.UUID, scanned_by: uuid.UUID) -> int:
+        """
+        How many participants THIS staff member has personally checked in
+        at this event — powers the scan-count badge in the mobile app's
+        barcode scanner (previously there was no way to see this at all;
+        scanned_by has always been recorded on every CheckIn row, just
+        never read back).
+        """
+        return int(
+            await self.db.scalar(
+                select(func.count(CheckIn.id)).where(
+                    CheckIn.event_id == event_id, CheckIn.scanned_by == scanned_by
+                )
+            )
+            or 0
+        )
+
+    async def get_latest_for_scanner(self, event_id: uuid.UUID, scanned_by: uuid.UUID) -> CheckIn | None:
+        result = await self.db.execute(
+            select(CheckIn)
+            .where(CheckIn.event_id == event_id, CheckIn.scanned_by == scanned_by)
+            .order_by(CheckIn.created_at.desc(), CheckIn.id.desc())
+            .limit(1)
+        )
+        return result.scalars().first()

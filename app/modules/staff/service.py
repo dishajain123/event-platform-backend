@@ -153,15 +153,52 @@ class StaffService:
             raise PermissionDeniedError("You don't have permission to view staff for this event.")
         return await self.assignments.page_for_event(event_id, page=page, page_size=page_size)
 
-    async def list_my_assignments(self, actor: User) -> list[StaffAssignment]:
+    async def list_my_assignments(self, actor: User) -> list["StaffAssignmentOut"]:
         """
         Closes a real gap: the only way to see StaffAssignment data was
         as the inviting Event Manager — the invitee themselves had no
         endpoint at all. This is what the mobile app's Pending
         Assignments (status=invited) and My Events (status=active)
         screens actually read from.
+
+        Also enriches each assignment with its event's name/dates and
+        venue name — the mobile "My Events" screen previously only had
+        `role_label` to show, with no way to tell which event or when
+        it actually is (the StaffAssignment row itself only carries
+        foreign keys, not display data).
         """
-        return await self.assignments.list_for_invitee_mobile(actor.mobile_number)
+        from app.modules.events.repository import EventRepository, VenueRepository
+        from app.modules.staff.schemas import StaffAssignmentOut
+
+        assignments = await self.assignments.list_for_invitee_mobile(actor.mobile_number)
+        events = EventRepository(self.db)
+        venues = VenueRepository(self.db)
+        event_cache: dict[uuid.UUID, object] = {}
+        venue_cache: dict[uuid.UUID, object] = {}
+
+        enriched: list[StaffAssignmentOut] = []
+        for assignment in assignments:
+            if assignment.event_id not in event_cache:
+                event_cache[assignment.event_id] = await events.get_by_id(assignment.event_id)
+            event = event_cache[assignment.event_id]
+
+            venue_name = None
+            if assignment.venue_id is not None:
+                if assignment.venue_id not in venue_cache:
+                    venue_cache[assignment.venue_id] = await venues.get_by_id(assignment.venue_id)
+                venue = venue_cache[assignment.venue_id]
+                venue_name = venue.name if venue is not None else None
+
+            out = StaffAssignmentOut.model_validate(assignment)
+            if event is not None:
+                out = out.model_copy(update={
+                    "event_name": event.name,
+                    "event_start_date": event.start_date,
+                    "event_end_date": event.end_date,
+                    "venue_name": venue_name,
+                })
+            enriched.append(out)
+        return enriched
 
     async def accept_assignment(self, assignment_id: uuid.UUID, actor: User) -> StaffAssignment:
         assignment = await self._get_assignment_or_raise(assignment_id)

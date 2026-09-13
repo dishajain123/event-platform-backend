@@ -14,6 +14,7 @@ from app.core import model_registry  # noqa: F401
 from app.config import get_settings
 from app.exceptions import register_exception_handlers
 from app.logging_config import configure_logging
+from app.lifespan import lifespan
 from app.middleware import register_middleware
 from app.database import get_db
 from app.redis_client import get_redis
@@ -54,7 +55,7 @@ settings = get_settings()
 
 configure_logging(settings.environment)
 
-app = FastAPI(title=settings.app_name)
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
 app.include_router(discovery_router, prefix=settings.api_v1_prefix)
 
 register_middleware(app)

@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.events.models import Event
 from app.modules.payments.models import DiscountCode, Payment, PaymentWebhookInbox, Refund
 
 
@@ -32,10 +33,22 @@ class PaymentRepository:
     async def page_all(
         self, *, event_id: uuid.UUID | None, page: int, page_size: int,
         search: str | None = None, status=None,
+        main_category_id: uuid.UUID | None = None, sub_category_id: uuid.UUID | None = None,
     ) -> tuple[list[Payment], int]:
+        needs_event_join = main_category_id is not None or sub_category_id is not None
+        query = select(Payment)
+        count_query = select(func.count()).select_from(Payment)
+        if needs_event_join:
+            query = query.join(Event, Payment.event_id == Event.id)
+            count_query = count_query.join(Event, Payment.event_id == Event.id)
+
         filters = []
         if event_id is not None:
             filters.append(Payment.event_id == event_id)
+        if main_category_id is not None:
+            filters.append(Event.main_category_id == main_category_id)
+        if sub_category_id is not None:
+            filters.append(Event.sub_category_id == sub_category_id)
         if search:
             filters.append(
                 (Payment.gateway_order_id.ilike(f"%{search}%"))
@@ -43,9 +56,9 @@ class PaymentRepository:
             )
         if status is not None:
             filters.append(Payment.status == status)
-        total = int((await self.db.execute(select(func.count()).select_from(Payment).where(*filters))).scalar_one())
+        total = int((await self.db.execute(count_query.where(*filters))).scalar_one())
         result = await self.db.execute(
-            select(Payment).where(*filters).order_by(Payment.created_at.desc(), Payment.id.desc())
+            query.where(*filters).order_by(Payment.created_at.desc(), Payment.id.desc())
             .offset((page - 1) * page_size).limit(page_size)
         )
         return list(result.scalars().all()), total

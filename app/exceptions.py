@@ -23,6 +23,11 @@ class AppError(Exception):
         super().__init__(message)
 
 
+class ServiceUnavailableError(AppError):
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    error_code = "service_unavailable"
+
+
 class NotFoundError(AppError):
     status_code = status.HTTP_404_NOT_FOUND
     error_code = "not_found"
@@ -57,4 +62,5 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content=content,
+            headers={"Retry-After": "5"} if exc.status_code == 503 else None,
         )

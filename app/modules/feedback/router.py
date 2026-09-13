@@ -96,6 +96,8 @@ async def feedback_summary(
     rating: int | None = Query(default=None, ge=1, le=5),
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    main_category_id: uuid.UUID | None = None,
+    sub_category_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     service: FeedbackService = Depends(get_feedback_service),
@@ -108,6 +110,8 @@ async def feedback_summary(
         rating=rating,
         date_from=date_from,
         date_to=date_to,
+        main_category_id=main_category_id,
+        sub_category_id=sub_category_id,
     )
 
 
@@ -118,6 +122,8 @@ async def list_feedback(
     rating: int | None = Query(default=None, ge=1, le=5),
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    main_category_id: uuid.UUID | None = None,
+    sub_category_id: uuid.UUID | None = None,
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(get_current_user),
@@ -132,6 +138,8 @@ async def list_feedback(
         rating=rating,
         date_from=date_from,
         date_to=date_to,
+        main_category_id=main_category_id,
+        sub_category_id=sub_category_id,
         limit=limit,
         offset=offset,
     )

@@ -88,9 +88,16 @@ The migration head creates and updates all registered module tables, including e
 ## Run the API on the Host
 
 ```bash
-source venv/bin/activate
-uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+bash scripts/start-local.sh
 ```
+
+On macOS, the startup script opens Docker Desktop if needed and waits up to 90 seconds for its daemon. On other platforms, start the Docker service first. The script starts PostgreSQL and Redis, waits for their health checks, and verifies the configured PostgreSQL and Redis connections before launching Uvicorn. Keep the host `.env` database port at `5433` when using this Compose stack. Dependency containers restart with Docker unless explicitly stopped; enable Docker Desktop startup at login if desired. Existing database volumes are preserved. Run migrations as described above for a new database or schema update.
+
+MinIO is optional for this startup command: use `START_MINIO=1 bash scripts/start-local.sh` when you need the project’s object storage on ports 9010/9011. An unrelated project using those ports will not block the default API startup.
+
+If an API process is already running and dependencies have stopped, run `bash scripts/start-local.sh --dependencies-only` to restore them without launching a duplicate API. Keep Docker Desktop running while using the app; quitting Docker stops its database too. Direct Uvicorn launches now check PostgreSQL before accepting requests and fail with startup guidance when it is unavailable.
+
+For diagnosis without starting another API process, run `venv/bin/python -m scripts.check_dependencies`. `/health` checks only the API process; `/ready` checks PostgreSQL and Redis. A stopped Docker daemon or PostgreSQL service must be restored before database-backed requests can succeed.
 
 The versioned API prefix is `/api/v1`. OpenAPI documentation is available at `/docs` and `/redoc`.
 

@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.modules.config_engine.service import ConfigEngineService
+from app.modules.event_categories.models import MainCategory, SubCategory
 from app.modules.events.service import EventService
 from app.modules.identity.models import User
 from app.modules.payments.service import PaymentService
@@ -110,8 +111,37 @@ async def test_event_operations_report_reflects_real_registrations_and_checkins(
     assert report.capacity_utilization_pct == 2.0
     assert report.total_check_ins == 1
     assert report.unique_tickets_checked_in == 1
+    assert report.main_category_id is None
+    assert report.sub_category_id is None
     statuses = {b.status: b.count for b in report.registrations_by_status}
     assert sum(statuses.values()) == 1
+
+
+@pytest.mark.asyncio
+async def test_operations_report_includes_event_category_hierarchy(db_session):
+    event, staff, registration, payment = await _make_event_with_paid_checked_in_registration(db_session)
+    main = MainCategory(name="Conferences")
+    db_session.add(main)
+    await db_session.flush()
+    sub = SubCategory(main_category_id=main.id, name="Tech")
+    db_session.add(sub)
+    await db_session.flush()
+    event.main_category_id = main.id
+    event.sub_category_id = sub.id
+    await db_session.commit()
+    db_session.expire(event, ["main_category", "sub_category"])
+
+    service = ReportService(db_session)
+    report = await service.get_event_operations_report(event.id)
+    assert report.main_category_id == main.id
+    assert report.main_category_name == "Conferences"
+    assert report.sub_category_id == sub.id
+    assert report.sub_category_name == "Tech"
+
+    platform_report = await service.get_platform_operations_report()
+    matching = next(e for e in platform_report.events if e.event_id == event.id)
+    assert matching.main_category_name == "Conferences"
+    assert matching.sub_category_name == "Tech"
 
 
 @pytest.mark.asyncio
@@ -128,6 +158,33 @@ async def test_event_financial_report_reflects_verified_payment(db_session):
     assert report.failed_payment_count == 0
     assert report.total_refunded == Decimal("0")
     assert report.net_revenue == Decimal("1000.00")
+    assert report.main_category_id is None
+    assert report.sub_category_id is None
+
+
+@pytest.mark.asyncio
+async def test_financial_report_includes_event_category_hierarchy(db_session):
+    event, staff, registration, payment = await _make_event_with_paid_checked_in_registration(db_session)
+    main = MainCategory(name="Conferences")
+    db_session.add(main)
+    await db_session.flush()
+    sub = SubCategory(main_category_id=main.id, name="Tech")
+    db_session.add(sub)
+    await db_session.flush()
+    event.main_category_id = main.id
+    event.sub_category_id = sub.id
+    await db_session.commit()
+    db_session.expire(event, ["main_category", "sub_category"])
+
+    service = ReportService(db_session)
+    report = await service.get_event_financial_report(event.id)
+    assert report.main_category_name == "Conferences"
+    assert report.sub_category_name == "Tech"
+
+    platform_report = await service.get_platform_financial_report()
+    matching = next(e for e in platform_report.events if e.event_id == event.id)
+    assert matching.main_category_name == "Conferences"
+    assert matching.sub_category_name == "Tech"
 
 
 @pytest.mark.asyncio
